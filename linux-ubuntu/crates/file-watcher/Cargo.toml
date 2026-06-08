@@ -1,0 +1,16 @@
+[package]
+name = "file-watcher"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+notify = "7"
+notify-debouncer-full = "0.3"
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true }

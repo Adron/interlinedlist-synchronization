@@ -1,0 +1,15 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=InterlinedList Sync
+GenericName=Document Synchronization
+Comment=Synchronize your InterlinedList documents with the cloud
+Exec=interlinedlist-sync --daemon
+Icon=interlinedlist-sync
+Categories=Utility;FileManager;
+Keywords=sync;documents;markdown;interlinedlist;
+StartupNotify=false
+NoDisplay=false
+
+# Autostart when the user session starts
+X-GNOME-Autostart-enabled=true

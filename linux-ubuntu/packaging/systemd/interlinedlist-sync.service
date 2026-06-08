@@ -1,0 +1,20 @@
+[Unit]
+Description=InterlinedList Document Synchronization
+Documentation=https://interlinedlist.com/help/documents
+After=graphical-session.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/interlinedlist-sync --daemon
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=30s
+
+# Hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=default.target

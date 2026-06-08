@@ -1,0 +1,21 @@
+[package]
+name = "api-client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+secret-store = { path = "../secret-store" }
+
+[dev-dependencies]
+tokio = { workspace = true }
+mockito = "1"
+tempfile = "3"

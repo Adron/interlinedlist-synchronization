@@ -1,0 +1,43 @@
+[package]
+name = "interlinedlist-sync"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "interlinedlist-sync"
+path = "src/main.rs"
+
+[dependencies]
+api-client = { path = "../api-client" }
+state-store = { path = "../state-store" }
+file-watcher = { path = "../file-watcher" }
+sync-engine = { path = "../sync-engine" }
+config-store = { path = "../config-store" }
+secret-store = { path = "../secret-store" }
+notifier = { path = "../notifier" }
+tray-app = { path = "../tray-app" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+clap = { workspace = true }
+dirs = { workspace = true }
+
+[package.metadata.deb]
+maintainer = "InterlinedList Team <support@interlinedlist.com>"
+copyright = "2026 InterlinedList"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+InterlinedList Sync watches local Markdown documents and keeps them in sync
+with your InterlinedList account via bidirectional synchronization."""
+depends = "$auto"
+section = "utils"
+priority = "optional"
+assets = [
+    ["target/release/interlinedlist-sync", "usr/bin/", "755"],
+    ["../../packaging/systemd/interlinedlist-sync.service", "usr/lib/systemd/user/", "644"],
+    ["../../packaging/apparmor/usr.bin.interlinedlist-sync", "etc/apparmor.d/", "644"],
+    ["../../packaging/desktop/interlinedlist-sync.desktop", "usr/share/applications/", "644"],
+    ["../../packaging/sysctl/60-interlinedlist-sync.conf", "etc/sysctl.d/", "644"],
+]
+maintainer-scripts = "debian/"

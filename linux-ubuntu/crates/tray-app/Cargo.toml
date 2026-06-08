@@ -1,0 +1,16 @@
+[package]
+name = "tray-app"
+version = "0.1.0"
+edition = "2021"
+
+# ksni only builds on Linux. On other hosts, the crate compiles to stubs
+# so `cargo check --workspace` passes on macOS dev machines.
+# GTK4/libadwaita are reserved for the M4 settings dialog.
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = "0.2"
+
+[dependencies]
+sync-engine = { path = "../sync-engine" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

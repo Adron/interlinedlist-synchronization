@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<installer-gui-script minSpecVersion="1">
+    <title>InterlinedList Sync</title>
+    <organization>com.interlinedlist</organization>
+    <domains enable_localSystem="false" enable_currentUserHome="true"/>
+    <options customize="never" require-scripts="false" rootVolumeOnly="false"/>
+    <choices-outline>
+        <line choice="default">
+            <line choice="com.interlinedlist.sync"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="com.interlinedlist.sync" visible="false">
+        <pkg-ref id="com.interlinedlist.sync"/>
+    </choice>
+    <pkg-ref id="com.interlinedlist.sync" version="0.1.0" onConclusion="none">InterlinedSync-component.pkg</pkg-ref>
+</installer-gui-script>

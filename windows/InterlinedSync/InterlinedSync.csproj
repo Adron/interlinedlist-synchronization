@@ -1,0 +1,66 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType Condition=" '$(OS)' == 'Windows_NT' ">WinExe</OutputType>
+    <OutputType Condition=" '$(OS)' != 'Windows_NT' ">Library</OutputType>
+    <TargetFramework Condition=" '$(OS)' == 'Windows_NT' ">net9.0-windows10.0.19041.0</TargetFramework>
+    <TargetFramework Condition=" '$(OS)' != 'Windows_NT' ">net9.0</TargetFramework>
+    <UseWPF Condition=" '$(OS)' == 'Windows_NT' ">true</UseWPF>
+    <SupportedOSPlatformVersion Condition=" '$(OS)' == 'Windows_NT' ">10.0.19041.0</SupportedOSPlatformVersion>
+    <RootNamespace>InterlinedSync</RootNamespace>
+    <AssemblyName>InterlinedSync</AssemblyName>
+    <ApplicationManifest Condition=" '$(OS)' == 'Windows_NT' ">app.manifest</ApplicationManifest>
+    <DefineConstants Condition=" '$(OS)' == 'Windows_NT' ">$(DefineConstants);WINDOWS_BUILD</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.Configuration" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Binder" />
+    <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" />
+    <PackageReference Include="Microsoft.Extensions.Http" />
+    <PackageReference Include="Microsoft.Extensions.Http.Polly" />
+    <PackageReference Include="Microsoft.Extensions.Logging" />
+    <PackageReference Include="Serilog" />
+    <PackageReference Include="Serilog.Extensions.Hosting" />
+    <PackageReference Include="Serilog.Extensions.Logging" />
+    <PackageReference Include="Serilog.Settings.Configuration" />
+    <PackageReference Include="Serilog.Sinks.File" />
+    <PackageReference Include="Serilog.Sinks.Console" />
+    <PackageReference Include="Polly" />
+    <PackageReference Include="Polly.Extensions.Http" />
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="CommunityToolkit.Mvvm" />
+    <PackageReference Include="System.IO.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup Condition=" '$(OS)' == 'Windows_NT' ">
+    <PackageReference Include="Hardcodet.NotifyIcon.Wpf" />
+  </ItemGroup>
+
+  <ItemGroup Condition=" '$(OS)' != 'Windows_NT' ">
+    <Compile Remove="App.xaml.cs" />
+    <Compile Remove="SystemTray\TrayIconController.cs" />
+    <Compile Remove="SystemTray\TrayMenuBuilder.cs" />
+    <Compile Remove="UI\Views\**\*.cs" />
+    <Compile Remove="Storage\CredentialManager.cs" />
+    <None Remove="App.xaml" />
+    <None Remove="UI\Views\**\*.xaml" />
+    <None Remove="UI\Resources\**\*.xaml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="Assets\*.ico">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,19 @@
+# InterlinedList Synchronization — Windows (`windows/`)
+
+The idea behind the application being developed for Windows is a synchronization tool for the Documents Feature of the web app at https://interlinedlist.com. The documentation is available at https://interlinedlist.com/help/documents and the API that can be used for synchronization is https://interlinedlist.com/help/api. The application will allow users to synchronize their documents between their local machine and the web app, ensuring that they have access to their documents from anywhere and that any changes made locally are reflected in the web app. The synchronization process will be designed to be efficient and user-friendly, providing a seamless experience for users of the Documents Feature.
+
+The synchronization tool needs to sit with the system tray of the operating system, allowing users to easily access it and manage their document synchronization. The tool will run in the background, continuously monitoring for changes in the local documents and syncing them with the web app as needed. Users will be able to configure the synchronization settings, such as which folders to sync and how often to check for changes. The tool will also provide notifications to inform users of successful synchronizations or any issues that may arise during the process. Overall, this application aims to enhance the user experience by providing a convenient and efficient way to keep their documents up-to-date across all platforms.
+
+The synchronization tool should be a native application built with the specific operating system in mind. The stack for each respective operating system should be able to be used to build out the following features:
+
+- System tray integration: The application should be able to sit in the system tray, allowing users to easily access it and manage their document synchronization.
+- Background synchronization: The application should continuously monitor for changes in the local documents and sync them with the web app as needed.
+- Configuration options: Users should be able to configure the synchronization settings, such as which folders to sync and how often to check for changes.
+- Notifications: The application should provide notifications to inform users of successful synchronizations or any issues that may arise during the process.
+- Error handling: The application should be able to handle any errors that may occur during the synchronization process and provide appropriate feedback to the user.
+- Security: The application should ensure that the synchronization process is secure, protecting user data and preventing unauthorized access.
+- User-friendly interface: The application should have a user-friendly interface that allows users to easily manage their document synchronization and access their documents from the web app.
+- Performance: The application should be optimized for performance, ensuring that the synchronization process is efficient and does not consume excessive system resources.
+- Scalability: The application should be designed to handle a large number of documents and users, ensuring that it can scale as the user base grows.
+- Regular updates: The application should be regularly updated to fix any bugs, improve performance, and add new features based on user feedback and evolving needs.
+- Documentation: The application should have comprehensive documentation that provides users with clear instructions on how to use the synchronization tool, troubleshoot common issues, and understand the features and capabilities of the application. This documentation should be easily accessible within the application and online for reference.
