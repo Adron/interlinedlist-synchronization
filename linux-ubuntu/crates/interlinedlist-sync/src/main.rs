@@ -18,7 +18,11 @@ use sync_engine::SyncEngine;
 use tray_app::run_tray_app;
 
 #[derive(Parser, Debug)]
-#[command(name = "interlinedlist-sync", version, about = "InterlinedList document sync daemon")]
+#[command(
+    name = "interlinedlist-sync",
+    version,
+    about = "InterlinedList document sync daemon"
+)]
 struct Cli {
     /// Run as a daemon with system tray (GTK4). Without this flag the process
     /// logs to stdout and exits after one sync cycle — useful for M1 testing.
@@ -73,7 +77,8 @@ async fn main() -> Result<()> {
     );
     let notifier = Arc::new(StubNotifier);
 
-    let (mut file_watcher, file_rx) = FileWatcher::new(256).context("failed to create file watcher")?;
+    let (mut file_watcher, file_rx) =
+        FileWatcher::new(256).context("failed to create file watcher")?;
 
     for dir in &config.sync.watched_dirs {
         let expanded = expand_tilde(dir);
@@ -98,14 +103,21 @@ async fn main() -> Result<()> {
     let status_rx = engine.status_receiver();
 
     if cli.daemon {
-        let engine_task = tokio::spawn(async move {
-            if let Err(e) = engine.run().await {
-                error!("sync engine exited with error: {e}");
-            }
-        });
-
-        run_tray_app(status_rx, sync_now_tx).await?;
-        engine_task.abort();
+        // StateStore contains RefCell (rusqlite), which is !Send, so both tasks
+        // must stay on the same thread. LocalSet provides that guarantee.
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async move {
+                let engine_task = tokio::task::spawn_local(async move {
+                    if let Err(e) = engine.run().await {
+                        error!("sync engine exited with error: {e}");
+                    }
+                });
+                run_tray_app(status_rx, sync_now_tx).await?;
+                engine_task.abort();
+                Ok::<(), anyhow::Error>(())
+            })
+            .await?;
     } else {
         // Headless mode: run one poll cycle then exit.
         info!("headless mode: running one poll cycle");

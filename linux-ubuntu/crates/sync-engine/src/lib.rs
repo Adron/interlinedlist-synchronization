@@ -115,9 +115,7 @@ impl SyncEngine {
             FileEvent::Changed(path) | FileEvent::Created(path) => {
                 self.upload_if_changed(&path).await
             }
-            FileEvent::Deleted(path) => {
-                self.delete_remote(&path).await
-            }
+            FileEvent::Deleted(path) => self.delete_remote(&path).await,
         }
     }
 
@@ -153,7 +151,10 @@ impl SyncEngine {
                     .update_document(
                         &self.account,
                         &server_id,
-                        UpdateDocumentRequest { title: Some(title), content: content.clone() },
+                        UpdateDocumentRequest {
+                            title: Some(title),
+                            content: content.clone(),
+                        },
                     )
                     .await
             }
@@ -161,7 +162,10 @@ impl SyncEngine {
                 self.api
                     .create_document(
                         &self.account,
-                        CreateDocumentRequest { title, content: content.clone() },
+                        CreateDocumentRequest {
+                            title,
+                            content: content.clone(),
+                        },
                     )
                     .await
             }
@@ -172,7 +176,10 @@ impl SyncEngine {
                 self.state.upsert(path, Some(&doc.id), Some(&hash))?;
                 info!("uploaded {}", path.display());
                 if self.config.notifications.show_success {
-                    let _ = self.notifier.notify(Notification::low("Synced 1 document")).await;
+                    let _ = self
+                        .notifier
+                        .notify(Notification::low("Synced 1 document"))
+                        .await;
                 }
                 self.set_status(SyncStatus::Idle).await;
                 Ok(())
@@ -217,14 +224,18 @@ impl SyncEngine {
                 Some(record) => {
                     // Download if remote hash differs from our last-synced hash.
                     summary.sha256.as_deref() != record.sha256.as_deref()
-                        && summary.updated_at > record.synced_at.unwrap_or_else(|| chrono::TimeZone::timestamp_opt(&Utc, 0, 0).unwrap())
+                        && summary.updated_at
+                            > record.synced_at.unwrap_or_else(|| {
+                                chrono::TimeZone::timestamp_opt(&Utc, 0, 0).unwrap()
+                            })
                 }
             };
 
             if should_download {
                 let doc = self.api.get_document(&self.account, &summary.id).await?;
                 let local_path = self.resolve_local_path(&doc.title);
-                self.write_document_atomic(&local_path, &doc.content, &summary.id).await?;
+                self.write_document_atomic(&local_path, &doc.content, &summary.id)
+                    .await?;
                 downloaded += 1;
             }
         }
@@ -232,7 +243,9 @@ impl SyncEngine {
         if downloaded > 0 && self.config.notifications.show_success {
             let _ = self
                 .notifier
-                .notify(Notification::low(format!("Synced {downloaded} document(s)")))
+                .notify(Notification::low(format!(
+                    "Synced {downloaded} document(s)"
+                )))
                 .await;
         }
 
@@ -240,7 +253,12 @@ impl SyncEngine {
         Ok(())
     }
 
-    async fn write_document_atomic(&self, path: &Path, content: &str, server_id: &str) -> Result<(), SyncError> {
+    async fn write_document_atomic(
+        &self,
+        path: &Path,
+        content: &str,
+        server_id: &str,
+    ) -> Result<(), SyncError> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| SyncError::Io {
                 path: parent.to_path_buf(),
@@ -252,7 +270,10 @@ impl SyncEngine {
         let incoming_hash = sha256_hex(content.as_bytes());
 
         if existing_hash.as_deref() == Some(incoming_hash.as_str()) {
-            debug!("remote content unchanged for {}, skipping write", path.display());
+            debug!(
+                "remote content unchanged for {}, skipping write",
+                path.display()
+            );
             return Ok(());
         }
 
@@ -264,8 +285,10 @@ impl SyncEngine {
             })?;
             let local_hash = sha256_hex(local_content.as_bytes());
 
-            let has_local_unsaved_change =
-                existing_hash.as_deref().map(|h| h != local_hash.as_str()).unwrap_or(true);
+            let has_local_unsaved_change = existing_hash
+                .as_deref()
+                .map(|h| h != local_hash.as_str())
+                .unwrap_or(true);
 
             if has_local_unsaved_change {
                 match self.config.sync.conflict_resolution {
@@ -274,20 +297,21 @@ impl SyncEngine {
                         if self.config.notifications.show_conflicts {
                             let _ = self
                                 .notifier
-                                .notify(
-                                    Notification::normal(format!(
-                                        "Conflict in {} — remote version kept",
-                                        path.file_name()
-                                            .and_then(|n| n.to_str())
-                                            .unwrap_or("document")
-                                    )),
-                                )
+                                .notify(Notification::normal(format!(
+                                    "Conflict in {} — remote version kept",
+                                    path.file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or("document")
+                                )))
                                 .await;
                         }
                     }
                     ConflictResolution::ConflictCopy => {
                         let ts = Utc::now().format("%Y%m%d-%H%M%S");
-                        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("document");
+                        let stem = path
+                            .file_stem()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("document");
                         let conflict_name = format!("{stem}.conflict-{ts}.md");
                         let conflict_path = path.with_file_name(conflict_name);
                         std::fs::copy(path, &conflict_path).map_err(|e| SyncError::Io {
@@ -298,14 +322,12 @@ impl SyncEngine {
                         if self.config.notifications.show_conflicts {
                             let _ = self
                                 .notifier
-                                .notify(
-                                    Notification::normal(format!(
-                                        "Conflict in {} — conflict copy created",
-                                        path.file_name()
-                                            .and_then(|n| n.to_str())
-                                            .unwrap_or("document")
-                                    )),
-                                )
+                                .notify(Notification::normal(format!(
+                                    "Conflict in {} — conflict copy created",
+                                    path.file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or("document")
+                                )))
                                 .await;
                         }
                     }
@@ -324,17 +346,30 @@ impl SyncEngine {
             reason: e.to_string(),
         })?;
 
-        self.state.upsert(path, Some(server_id), Some(&incoming_hash))?;
+        self.state
+            .upsert(path, Some(server_id), Some(&incoming_hash))?;
         debug!("wrote remote doc to {}", path.display());
         Ok(())
     }
 
     fn resolve_local_path(&self, title: &str) -> PathBuf {
-        let watched = self.config.sync.watched_dirs.first().map(String::as_str).unwrap_or("~/Documents/InterlinedList");
+        let watched = self
+            .config
+            .sync
+            .watched_dirs
+            .first()
+            .map(String::as_str)
+            .unwrap_or("~/Documents/InterlinedList");
         let expanded = expand_tilde(watched);
         let safe_name: String = title
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         expanded.join(format!("{safe_name}.md"))
     }
@@ -448,7 +483,9 @@ mod tests {
         // Seed state so the engine believes it last synced "old-hash".
         let local_path = watch_dir.join("report.md");
         std::fs::write(&local_path, "# local unsaved change").unwrap();
-        state.upsert(&local_path, Some("srv-1"), Some("old-hash")).unwrap();
+        state
+            .upsert(&local_path, Some("srv-1"), Some("old-hash"))
+            .unwrap();
 
         // Remote sends different content.
         engine
@@ -460,9 +497,7 @@ mod tests {
         let entries: Vec<_> = std::fs::read_dir(&watch_dir)
             .unwrap()
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name().to_string_lossy().contains("conflict")
-            })
+            .filter(|e| e.file_name().to_string_lossy().contains("conflict"))
             .collect();
         assert_eq!(entries.len(), 1, "expected exactly one conflict copy");
     }
@@ -482,7 +517,9 @@ mod tests {
 
         let local_path = watch_dir.join("report.md");
         std::fs::write(&local_path, "# local unsaved change").unwrap();
-        state.upsert(&local_path, Some("srv-1"), Some("old-hash")).unwrap();
+        state
+            .upsert(&local_path, Some("srv-1"), Some("old-hash"))
+            .unwrap();
 
         engine
             .write_document_atomic(&local_path, "# remote content", "srv-1")
@@ -494,7 +531,10 @@ mod tests {
             .filter_map(|e| e.ok())
             .filter(|e| e.file_name().to_string_lossy().contains("conflict"))
             .collect();
-        assert!(entries.is_empty(), "remote-wins should not create a conflict copy");
+        assert!(
+            entries.is_empty(),
+            "remote-wins should not create a conflict copy"
+        );
 
         let content = std::fs::read_to_string(&local_path).unwrap();
         assert_eq!(content, "# remote content");

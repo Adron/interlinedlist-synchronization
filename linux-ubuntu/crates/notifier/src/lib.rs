@@ -23,15 +23,27 @@ pub struct Notification {
 
 impl Notification {
     pub fn low(summary: impl Into<String>) -> Self {
-        Self { summary: summary.into(), body: None, urgency: Urgency::Low }
+        Self {
+            summary: summary.into(),
+            body: None,
+            urgency: Urgency::Low,
+        }
     }
 
     pub fn normal(summary: impl Into<String>) -> Self {
-        Self { summary: summary.into(), body: None, urgency: Urgency::Normal }
+        Self {
+            summary: summary.into(),
+            body: None,
+            urgency: Urgency::Normal,
+        }
     }
 
     pub fn critical(summary: impl Into<String>) -> Self {
-        Self { summary: summary.into(), body: None, urgency: Urgency::Critical }
+        Self {
+            summary: summary.into(),
+            body: None,
+            urgency: Urgency::Critical,
+        }
     }
 
     pub fn with_body(mut self, body: impl Into<String>) -> Self {

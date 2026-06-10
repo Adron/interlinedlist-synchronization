@@ -24,4 +24,8 @@
     <ProjectReference Include="..\InterlinedSync\InterlinedSync.csproj" />
   </ItemGroup>
 
+  <ItemGroup Condition=" '$(OS)' != 'Windows_NT' ">
+    <Compile Remove="SystemTray\TrayMenuBuilderTests.cs" />
+  </ItemGroup>
+
 </Project>

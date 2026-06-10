@@ -79,8 +79,17 @@ pub trait ApiClientTrait: Send + Sync {
     async fn login(&self, username: &str, password: &str) -> Result<String, ApiError>;
     async fn list_documents(&self, account: &str) -> Result<Vec<DocumentSummary>, ApiError>;
     async fn get_document(&self, account: &str, id: &str) -> Result<Document, ApiError>;
-    async fn create_document(&self, account: &str, req: CreateDocumentRequest) -> Result<Document, ApiError>;
-    async fn update_document(&self, account: &str, id: &str, req: UpdateDocumentRequest) -> Result<Document, ApiError>;
+    async fn create_document(
+        &self,
+        account: &str,
+        req: CreateDocumentRequest,
+    ) -> Result<Document, ApiError>;
+    async fn update_document(
+        &self,
+        account: &str,
+        id: &str,
+        req: UpdateDocumentRequest,
+    ) -> Result<Document, ApiError>;
     async fn delete_document(&self, account: &str, id: &str) -> Result<(), ApiError>;
 }
 
@@ -104,14 +113,20 @@ impl ApiClient {
             .use_rustls_tls()
             .timeout(config.timeout)
             .build()?;
-        Ok(Self { http, config, secrets })
+        Ok(Self {
+            http,
+            config,
+            secrets,
+        })
     }
 
     async fn token_for(&self, account: &str) -> Result<String, ApiError> {
         self.secrets
             .load_token(account)
             .await
-            .map_err(|_| ApiError::NoToken { account: account.to_string() })
+            .map_err(|_| ApiError::NoToken {
+                account: account.to_string(),
+            })
     }
 
     async fn execute_with_retry<F, Fut, T>(&self, op: F) -> Result<T, ApiError>
@@ -216,7 +231,11 @@ impl ApiClientTrait for ApiClient {
         .await
     }
 
-    async fn create_document(&self, account: &str, req: CreateDocumentRequest) -> Result<Document, ApiError> {
+    async fn create_document(
+        &self,
+        account: &str,
+        req: CreateDocumentRequest,
+    ) -> Result<Document, ApiError> {
         let token = self.token_for(account).await?;
         self.execute_with_retry(|| async {
             let resp = self
@@ -231,7 +250,12 @@ impl ApiClientTrait for ApiClient {
         .await
     }
 
-    async fn update_document(&self, account: &str, id: &str, req: UpdateDocumentRequest) -> Result<Document, ApiError> {
+    async fn update_document(
+        &self,
+        account: &str,
+        id: &str,
+        req: UpdateDocumentRequest,
+    ) -> Result<Document, ApiError> {
         let token = self.token_for(account).await?;
         let url = self.url(&format!("/documents/{id}"));
         self.execute_with_retry(|| async {
@@ -254,11 +278,15 @@ impl ApiClientTrait for ApiClient {
             let resp = self.http.delete(&url).bearer_auth(&token).send().await?;
             match resp.status() {
                 StatusCode::OK | StatusCode::NO_CONTENT | StatusCode::ACCEPTED => Ok(()),
-                StatusCode::NOT_FOUND => Err(ApiError::NotFound { resource: url.clone() }),
+                StatusCode::NOT_FOUND => Err(ApiError::NotFound {
+                    resource: url.clone(),
+                }),
                 StatusCode::UNAUTHORIZED => Err(ApiError::Auth("token rejected".to_string())),
                 StatusCode::TOO_MANY_REQUESTS => {
                     let retry = retry_after(&resp);
-                    Err(ApiError::RateLimited { retry_after_secs: retry })
+                    Err(ApiError::RateLimited {
+                        retry_after_secs: retry,
+                    })
                 }
                 s => {
                     let status = s.as_u16();
@@ -286,7 +314,9 @@ async fn parse_response<T: serde::de::DeserializeOwned>(
         }
         StatusCode::TOO_MANY_REQUESTS => {
             let retry = retry_after(&resp);
-            Err(ApiError::RateLimited { retry_after_secs: retry })
+            Err(ApiError::RateLimited {
+                retry_after_secs: retry,
+            })
         }
         s => {
             let status = s.as_u16();
@@ -334,13 +364,19 @@ mod tests {
             backoff_base: Duration::from_millis(10),
         };
         let client = ApiClient::new(config, secrets).unwrap();
-        TestContext { server, client, dir, account }
+        TestContext {
+            server,
+            client,
+            dir,
+            account,
+        }
     }
 
     #[tokio::test]
     async fn login_returns_token_on_200() {
         let mut ctx = make_context().await;
-        let _m = ctx.server
+        let _m = ctx
+            .server
             .mock("POST", "/auth/login")
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -355,7 +391,8 @@ mod tests {
     #[tokio::test]
     async fn login_returns_auth_error_on_401() {
         let mut ctx = make_context().await;
-        let _m = ctx.server
+        let _m = ctx
+            .server
             .mock("POST", "/auth/login")
             .with_status(401)
             .create_async()
@@ -368,8 +405,10 @@ mod tests {
     #[tokio::test]
     async fn list_documents_deserializes_correctly() {
         let mut ctx = make_context().await;
-        let body = r#"[{"id":"doc-1","title":"Note","updated_at":"2026-01-01T00:00:00Z","sha256":null}]"#;
-        let _m = ctx.server
+        let body =
+            r#"[{"id":"doc-1","title":"Note","updated_at":"2026-01-01T00:00:00Z","sha256":null}]"#;
+        let _m = ctx
+            .server
             .mock("GET", "/documents")
             .match_header("authorization", "Bearer test-token")
             .with_status(200)
@@ -386,21 +425,27 @@ mod tests {
     #[tokio::test]
     async fn get_document_returns_not_found_on_404() {
         let mut ctx = make_context().await;
-        let _m = ctx.server
+        let _m = ctx
+            .server
             .mock("GET", "/documents/missing")
             .with_status(404)
             .create_async()
             .await;
 
-        let err = ctx.client.get_document(&ctx.account, "missing").await.unwrap_err();
+        let err = ctx
+            .client
+            .get_document(&ctx.account, "missing")
+            .await
+            .unwrap_err();
         assert!(matches!(err, ApiError::NotFound { .. }));
     }
 
     #[tokio::test]
     async fn create_document_sends_json_body() {
         let mut ctx = make_context().await;
-        let resp_body = r#"{"id":"new-1","title":"Test","content":"# Hello","updated_at":"2026-01-01T00:00:00Z","sha256":null}"#;
-        let _m = ctx.server
+        let resp_body = r##"{"id":"new-1","title":"Test","content":"# Hello","updated_at":"2026-01-01T00:00:00Z","sha256":null}"##;
+        let _m = ctx
+            .server
             .mock("POST", "/documents")
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -408,7 +453,8 @@ mod tests {
             .create_async()
             .await;
 
-        let doc = ctx.client
+        let doc = ctx
+            .client
             .create_document(
                 &ctx.account,
                 CreateDocumentRequest {
@@ -424,8 +470,9 @@ mod tests {
     #[tokio::test]
     async fn update_document_sends_put() {
         let mut ctx = make_context().await;
-        let resp_body = r#"{"id":"doc-1","title":"Test","content":"# Updated","updated_at":"2026-01-01T00:00:00Z","sha256":null}"#;
-        let _m = ctx.server
+        let resp_body = r##"{"id":"doc-1","title":"Test","content":"# Updated","updated_at":"2026-01-01T00:00:00Z","sha256":null}"##;
+        let _m = ctx
+            .server
             .mock("PUT", "/documents/doc-1")
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -433,7 +480,8 @@ mod tests {
             .create_async()
             .await;
 
-        let doc = ctx.client
+        let doc = ctx
+            .client
             .update_document(
                 &ctx.account,
                 "doc-1",
@@ -450,12 +498,16 @@ mod tests {
     #[tokio::test]
     async fn delete_document_succeeds_on_204() {
         let mut ctx = make_context().await;
-        let _m = ctx.server
+        let _m = ctx
+            .server
             .mock("DELETE", "/documents/doc-1")
             .with_status(204)
             .create_async()
             .await;
 
-        ctx.client.delete_document(&ctx.account, "doc-1").await.unwrap();
+        ctx.client
+            .delete_document(&ctx.account, "doc-1")
+            .await
+            .unwrap();
     }
 }

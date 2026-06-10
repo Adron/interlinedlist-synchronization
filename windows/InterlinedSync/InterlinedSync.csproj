@@ -45,10 +45,20 @@
     <Compile Remove="SystemTray\TrayIconController.cs" />
     <Compile Remove="SystemTray\TrayMenuBuilder.cs" />
     <Compile Remove="UI\Views\**\*.cs" />
+    <Compile Remove="UI\Converters\**\*.cs" />
     <Compile Remove="Storage\CredentialManager.cs" />
     <None Remove="App.xaml" />
     <None Remove="UI\Views\**\*.xaml" />
     <None Remove="UI\Resources\**\*.xaml" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>InterlinedSync.Tests</_Parameter1>
+    </AssemblyAttribute>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleTo">
+      <_Parameter1>InterlinedSync.IntegrationTests</_Parameter1>
+    </AssemblyAttribute>
   </ItemGroup>
 
   <ItemGroup>

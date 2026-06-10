@@ -101,7 +101,12 @@ impl StateStore {
         Ok(())
     }
 
-    pub fn upsert(&self, local_path: &Path, server_id: Option<&str>, sha256: Option<&str>) -> Result<DocumentRecord, StateStoreError> {
+    pub fn upsert(
+        &self,
+        local_path: &Path,
+        server_id: Option<&str>,
+        sha256: Option<&str>,
+    ) -> Result<DocumentRecord, StateStoreError> {
         let path_str = local_path.to_string_lossy();
         let now = Utc::now().to_rfc3339();
 
@@ -136,7 +141,10 @@ impl StateStore {
         }
     }
 
-    pub fn lookup_by_server_id(&self, server_id: &str) -> Result<Option<DocumentRecord>, StateStoreError> {
+    pub fn lookup_by_server_id(
+        &self,
+        server_id: &str,
+    ) -> Result<Option<DocumentRecord>, StateStoreError> {
         let result = self.conn.query_row(
             "SELECT id, local_path, server_id, sha256, synced_at, pending_op
              FROM documents WHERE server_id = ?1",
@@ -150,7 +158,12 @@ impl StateStore {
         }
     }
 
-    pub fn update_hash(&self, local_path: &Path, sha256: &str, synced_at: DateTime<Utc>) -> Result<(), StateStoreError> {
+    pub fn update_hash(
+        &self,
+        local_path: &Path,
+        sha256: &str,
+        synced_at: DateTime<Utc>,
+    ) -> Result<(), StateStoreError> {
         let path_str = local_path.to_string_lossy();
         self.conn.execute(
             "UPDATE documents SET sha256 = ?1, synced_at = ?2, pending_op = 'none'
@@ -235,7 +248,9 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = make_store(&dir);
         let path = PathBuf::from("/home/user/docs/note.md");
-        let record = store.upsert(&path, Some("srv-001"), Some("abc123")).unwrap();
+        let record = store
+            .upsert(&path, Some("srv-001"), Some("abc123"))
+            .unwrap();
         assert_eq!(record.local_path, path);
         assert_eq!(record.server_id.as_deref(), Some("srv-001"));
         assert_eq!(record.sha256.as_deref(), Some("abc123"));
@@ -293,8 +308,12 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = make_store(&dir);
         let path = PathBuf::from("/docs/note.md");
-        store.upsert(&path, Some("old-id"), Some("old-hash")).unwrap();
-        store.upsert(&path, Some("new-id"), Some("new-hash")).unwrap();
+        store
+            .upsert(&path, Some("old-id"), Some("old-hash"))
+            .unwrap();
+        store
+            .upsert(&path, Some("new-id"), Some("new-hash"))
+            .unwrap();
         let record = store.lookup(&path).unwrap();
         assert_eq!(record.server_id.as_deref(), Some("new-id"));
         assert_eq!(record.sha256.as_deref(), Some("new-hash"));

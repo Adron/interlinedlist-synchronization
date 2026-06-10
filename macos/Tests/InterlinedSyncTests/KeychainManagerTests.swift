@@ -3,13 +3,15 @@ import XCTest
 
 final class KeychainManagerTests: XCTestCase {
     private let service = "com.interlinedlist.sync.tests"
-    private let account = "unit-test-account"
+    private var account = ""
     private var keychain: KeychainManager!
 
     override func setUp() {
         super.setUp()
+        // UUID per invocation: each test gets a fresh key, so leftover state
+        // from prior runs or parallel siblings can never cause a duplicate.
+        account = UUID().uuidString
         keychain = KeychainManager(service: service)
-        try? keychain.delete(for: account)
     }
 
     override func tearDown() {

@@ -96,13 +96,13 @@ pub async fn run_tray_app(
     info!("starting system tray");
 
     // ksni spawns a background thread for the D-Bus StatusNotifierItem service.
-    // The handle keeps the service alive; dropping it shuts it down.
+    // In ksni 0.2, spawn() returns () and runs until the process exits.
     let service = ksni::TrayService::new(InterlinedTray {
         status_rx,
         sync_now_tx,
         paused: false,
     });
-    let _handle = service.spawn()?;
+    service.spawn();
 
     tokio::signal::ctrl_c().await?;
     // _handle drops here, which shuts down the tray service.

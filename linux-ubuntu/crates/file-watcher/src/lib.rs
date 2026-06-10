@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use notify::RecursiveMode;
+use notify::{RecursiveMode, Watcher};
 use notify_debouncer_full::{new_debouncer, DebounceEventResult};
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -48,36 +48,40 @@ impl FileWatcher {
     pub fn new(buffer: usize) -> Result<(Self, mpsc::Receiver<FileEvent>)> {
         let (tx, receiver) = mpsc::channel(buffer);
 
-        let debouncer = new_debouncer(DEBOUNCE_DURATION, None, move |result: DebounceEventResult| {
-            match result {
-                Ok(events) => {
-                    for event in events {
-                        let paths = event.event.paths;
-                        let kind = event.event.kind;
+        let debouncer = new_debouncer(
+            DEBOUNCE_DURATION,
+            None,
+            move |result: DebounceEventResult| {
+                match result {
+                    Ok(events) => {
+                        for event in events {
+                            let paths = event.event.paths;
+                            let kind = event.event.kind;
 
-                        for path in paths {
-                            if !is_markdown(&path) {
-                                continue;
-                            }
+                            for path in paths {
+                                if !is_markdown(&path) {
+                                    continue;
+                                }
 
-                            let file_event = classify_event(&kind, path);
-                            if let Some(fe) = file_event {
-                                debug!("file event: {fe:?}");
-                                if tx.blocking_send(fe).is_err() {
-                                    // Receiver dropped; the watcher loop is shutting down.
-                                    return;
+                                let file_event = classify_event(&kind, path);
+                                if let Some(fe) = file_event {
+                                    debug!("file event: {fe:?}");
+                                    if tx.blocking_send(fe).is_err() {
+                                        // Receiver dropped; the watcher loop is shutting down.
+                                        return;
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                Err(errors) => {
-                    for e in errors {
-                        warn!("inotify error: {e}");
+                    Err(errors) => {
+                        for e in errors {
+                            warn!("inotify error: {e}");
+                        }
                     }
                 }
-            }
-        })
+            },
+        )
         .context("failed to create debouncer")?;
 
         let watcher = Self {
@@ -127,8 +131,8 @@ fn is_markdown(path: &Path) -> bool {
 }
 
 fn classify_event(kind: &notify::EventKind, path: PathBuf) -> Option<FileEvent> {
-    use notify::EventKind::*;
     use notify::event::{CreateKind, ModifyKind, RemoveKind};
+    use notify::EventKind::*;
 
     match kind {
         Create(CreateKind::File) | Create(CreateKind::Any) => Some(FileEvent::Created(path)),
@@ -167,7 +171,10 @@ mod tests {
         let event = result.unwrap();
         assert!(event.is_some());
         let event = event.unwrap();
-        assert!(matches!(event, FileEvent::Changed(_) | FileEvent::Created(_)));
+        assert!(matches!(
+            event,
+            FileEvent::Changed(_) | FileEvent::Created(_)
+        ));
         assert_eq!(event.path(), md_file.as_path());
     }
 

@@ -20,10 +20,16 @@ struct KeychainManager: TokenStorage {
             throw KeychainError.unexpectedData
         }
 
+        // kSecAttrSynchronizable: false pins the item to the local keychain.
+        // Omitting it causes kSecAttrSynchronizableAny semantics on queries,
+        // which can produce errSecItemNotFound on SecItemUpdate even when the
+        // item exists — leading to a spurious errSecDuplicateItem on the
+        // subsequent SecItemAdd.
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account
+            kSecAttrAccount as String: account,
+            kSecAttrSynchronizable as String: false
         ]
 
         let attributes: [String: Any] = [
@@ -56,6 +62,7 @@ struct KeychainManager: TokenStorage {
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
+            kSecAttrSynchronizable as String: false,
             kSecReturnData as String: true,
             kSecMatchLimit as String: kSecMatchLimitOne
         ]
@@ -80,7 +87,8 @@ struct KeychainManager: TokenStorage {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account
+            kSecAttrAccount as String: account,
+            kSecAttrSynchronizable as String: false
         ]
 
         let status = SecItemDelete(query as CFDictionary)

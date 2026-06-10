@@ -9,7 +9,9 @@ namespace InterlinedSync.Tests.Storage;
 
 public class PreferencesManagerTests
 {
-    private const string PrefsPath = @"C:\app\appsettings.json";
+    // Use Path.Combine so the MockFileSystem path is valid on both Windows and macOS.
+    private static readonly string PrefsDir = Path.Combine(Path.GetTempPath(), "interlinedlist-test");
+    private static readonly string PrefsPath = Path.Combine(PrefsDir, "appsettings.json");
 
     private static PreferencesManager Build(MockFileSystem fs)
         => new(fs, NullLogger<PreferencesManager>.Instance, PrefsPath);
@@ -55,7 +57,7 @@ public class PreferencesManagerTests
 
         await manager.SaveAsync(new SyncPreferences { SyncFolder = @"C:\sync" });
 
-        fs.Directory.Exists(@"C:\app").Should().BeTrue();
+        fs.Directory.Exists(PrefsDir).Should().BeTrue();
         fs.File.Exists(PrefsPath).Should().BeTrue();
     }
 

@@ -36,10 +36,7 @@ impl SecretStore for KeyringSecretStore {
         collection
             .create_item(
                 &format!("{SERVICE_NAME} token for {account}"),
-                std::collections::HashMap::from([
-                    ("service", SERVICE_NAME),
-                    ("account", account),
-                ]),
+                std::collections::HashMap::from([("service", SERVICE_NAME), ("account", account)]),
                 token.as_bytes(),
                 true, // replace existing
                 "text/plain",

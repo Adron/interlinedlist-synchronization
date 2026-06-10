@@ -112,7 +112,9 @@ public static class Program
         services.AddHttpClient<IInterlinedListClient, InterlinedListClient>()
             .AddHttpMessageHandler<BearerTokenHandler>();
 
+#if WINDOWS_BUILD
         services.AddSingleton<TrayMenuBuilder>();
+#endif
 
         services.AddTransient<OnboardingViewModel>();
         services.AddTransient<SettingsViewModel>();

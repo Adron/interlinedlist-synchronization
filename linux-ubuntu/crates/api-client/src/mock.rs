@@ -5,7 +5,10 @@ use anyhow::Result;
 use async_trait::async_trait;
 use chrono::Utc;
 
-use crate::{ApiClientTrait, ApiError, CreateDocumentRequest, Document, DocumentSummary, UpdateDocumentRequest};
+use crate::{
+    ApiClientTrait, ApiError, CreateDocumentRequest, Document, DocumentSummary,
+    UpdateDocumentRequest,
+};
 
 /// In-memory ApiClient stub for use in sync-engine unit tests.
 pub struct MockApiClient {
@@ -76,10 +79,16 @@ impl ApiClientTrait for MockApiClient {
             .unwrap()
             .get(id)
             .cloned()
-            .ok_or_else(|| ApiError::NotFound { resource: id.to_string() })
+            .ok_or_else(|| ApiError::NotFound {
+                resource: id.to_string(),
+            })
     }
 
-    async fn create_document(&self, _account: &str, req: CreateDocumentRequest) -> Result<Document, ApiError> {
+    async fn create_document(
+        &self,
+        _account: &str,
+        req: CreateDocumentRequest,
+    ) -> Result<Document, ApiError> {
         if let Some(e) = self.take_failure() {
             return Err(e);
         }
@@ -95,12 +104,19 @@ impl ApiClientTrait for MockApiClient {
         Ok(doc)
     }
 
-    async fn update_document(&self, _account: &str, id: &str, req: UpdateDocumentRequest) -> Result<Document, ApiError> {
+    async fn update_document(
+        &self,
+        _account: &str,
+        id: &str,
+        req: UpdateDocumentRequest,
+    ) -> Result<Document, ApiError> {
         if let Some(e) = self.take_failure() {
             return Err(e);
         }
         let mut docs = self.documents.lock().unwrap();
-        let doc = docs.get_mut(id).ok_or_else(|| ApiError::NotFound { resource: id.to_string() })?;
+        let doc = docs.get_mut(id).ok_or_else(|| ApiError::NotFound {
+            resource: id.to_string(),
+        })?;
         if let Some(title) = req.title {
             doc.title = title;
         }
@@ -120,8 +136,11 @@ impl ApiClientTrait for MockApiClient {
 
 fn uuid_simple() -> String {
     // Minimal unique ID using timestamp + pointer address — sufficient for tests.
-    format!("{:x}", std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .subsec_nanos())
+    format!(
+        "{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos()
+    )
 }

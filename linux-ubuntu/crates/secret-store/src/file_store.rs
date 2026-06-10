@@ -29,7 +29,13 @@ impl FileSecretStore {
         // Sanitize account so it can be used as a filename component.
         let safe: String = account
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '.' { c } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' || c == '@' || c == '.' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         self.config_dir.join(format!(".token-{safe}"))
     }
@@ -96,7 +102,10 @@ mod tests {
     async fn store_and_load_token() {
         let dir = tempfile::TempDir::new().unwrap();
         let store = make_store(&dir);
-        store.store_token("user@example.com", "tok123").await.unwrap();
+        store
+            .store_token("user@example.com", "tok123")
+            .await
+            .unwrap();
         let loaded = store.load_token("user@example.com").await.unwrap();
         assert_eq!(loaded, "tok123");
     }
@@ -113,7 +122,10 @@ mod tests {
     async fn delete_token_removes_file() {
         let dir = tempfile::TempDir::new().unwrap();
         let store = make_store(&dir);
-        store.store_token("user@example.com", "tok456").await.unwrap();
+        store
+            .store_token("user@example.com", "tok456")
+            .await
+            .unwrap();
         store.delete_token("user@example.com").await.unwrap();
         let result = store.load_token("user@example.com").await;
         assert!(matches!(result, Err(SecretStoreError::NotFound { .. })));

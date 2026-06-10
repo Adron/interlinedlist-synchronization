@@ -9,7 +9,9 @@ pub struct LibnotifyNotifier {
 
 impl LibnotifyNotifier {
     pub fn new(app_name: impl Into<String>) -> Self {
-        Self { app_name: app_name.into() }
+        Self {
+            app_name: app_name.into(),
+        }
     }
 }
 
@@ -28,13 +30,20 @@ impl Notifier for LibnotifyNotifier {
             }
 
             match notification.urgency {
-                Urgency::Low => { n.urgency(notify_rust::Urgency::Low); }
-                Urgency::Normal => { n.urgency(notify_rust::Urgency::Normal); }
-                Urgency::Critical => { n.urgency(notify_rust::Urgency::Critical); }
+                Urgency::Low => {
+                    n.urgency(notify_rust::Urgency::Low);
+                }
+                Urgency::Normal => {
+                    n.urgency(notify_rust::Urgency::Normal);
+                }
+                Urgency::Critical => {
+                    n.urgency(notify_rust::Urgency::Critical);
+                }
             }
 
             debug!("sending libnotify notification: {}", notification.summary);
-            n.show().map_err(|e| NotifierError::Backend(e.to_string()))?;
+            n.show()
+                .map_err(|e| NotifierError::Backend(e.to_string()))?;
             Ok(())
         })
         .await
