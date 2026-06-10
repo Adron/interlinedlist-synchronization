@@ -346,6 +346,7 @@ mod tests {
     struct TestContext {
         server: ServerGuard,
         client: ApiClient,
+        #[allow(dead_code)] // kept alive so the temp dir isn't cleaned up during the test
         dir: TempDir,
         account: String,
     }

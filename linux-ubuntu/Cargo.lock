@@ -2392,6 +2392,7 @@ dependencies = [
  "async-trait",
  "dirs",
  "secret-service",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -2577,6 +2578,7 @@ dependencies = [
  "chrono",
  "dirs",
  "rusqlite",
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
 ]
