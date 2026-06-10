@@ -1,0 +1,195 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+# Each build job is independent so all three platforms compile in parallel.
+# The final job collects all artifacts and creates a draft GitHub Release.
+jobs:
+
+  # ---------------------------------------------------------------------------
+  # macOS — unsigned .app bundle zipped for direct distribution
+  # Signed .pkg can be added once Developer ID credentials are in repo secrets.
+  # ---------------------------------------------------------------------------
+  build-macos:
+    name: Build macOS
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Build .app bundle
+        run: bash macos/scripts/make-app.sh
+
+      - name: Zip .app bundle
+        run: |
+          cd macos/build
+          zip -r --symlinks "InterlinedSync-macOS-${{ github.ref_name }}.zip" InterlinedSync.app
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release
+          path: macos/build/InterlinedSync-macOS-${{ github.ref_name }}.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Windows — framework-dependent publish (requires .NET 9 Desktop Runtime)
+  # MSIX packaging can be added once a code-signing cert is configured.
+  # ---------------------------------------------------------------------------
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Restore packages
+        working-directory: windows
+        run: dotnet restore
+
+      - name: Publish
+        working-directory: windows
+        run: >
+          dotnet publish InterlinedSync/InterlinedSync.csproj
+          --configuration Release
+          --no-restore
+          --runtime win-x64
+          --self-contained false
+          --output publish
+
+      - name: Zip publish output
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path windows/publish/* `
+            -DestinationPath "InterlinedSync-Windows-${{ github.ref_name }}.zip"
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: InterlinedSync-Windows-${{ github.ref_name }}.zip
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Linux — .deb package (via cargo-deb) + standalone binary tarball
+  # ---------------------------------------------------------------------------
+  build-linux:
+    name: Build Linux
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libdbus-1-dev \
+            libsqlite3-dev \
+            libsecret-1-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: linux-ubuntu
+
+      - name: Build release binary
+        working-directory: linux-ubuntu
+        run: cargo build --release
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb --version "2.4.0"
+
+      - name: Build .deb package
+        working-directory: linux-ubuntu
+        run: cargo deb -p interlinedlist-sync --no-build
+
+      - name: Create binary tarball
+        run: |
+          tar -czf "linux-ubuntu/InterlinedSync-Linux-${{ github.ref_name }}.tar.gz" \
+            -C linux-ubuntu/target/release interlinedlist-sync
+
+      - name: Upload Linux artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release
+          path: |
+            linux-ubuntu/target/debian/*.deb
+            linux-ubuntu/InterlinedSync-Linux-${{ github.ref_name }}.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Create a draft GitHub Release and attach all platform artifacts.
+  # Publish the release manually from the GitHub UI after reviewing the files.
+  # ---------------------------------------------------------------------------
+  create-release:
+    name: Create GitHub Release
+    needs: [build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all release artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh release-artifacts/
+
+      - name: Write release notes
+        run: |
+          TAG="${{ github.ref_name }}"
+          cat > release-notes.md << EOF
+          ## InterlinedList Sync ${TAG}
+
+          ### Downloads
+
+          | Platform | File | Notes |
+          |----------|------|-------|
+          | macOS 13 Ventura or later | \`InterlinedSync-macOS-${TAG}.zip\` | Unzip and move to \`/Applications\`. Unsigned — right-click → Open to bypass Gatekeeper on first launch. |
+          | Windows 10 / 11 (x64) | \`InterlinedSync-Windows-${TAG}.zip\` | Unzip and run \`InterlinedSync.exe\`. Requires [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0). |
+          | Ubuntu / Debian (amd64) | \`interlinedlist-sync_*.deb\` | \`sudo dpkg -i interlinedlist-sync_*.deb\` |
+          | Linux standalone binary | \`InterlinedSync-Linux-${TAG}.tar.gz\` | Extract and place \`interlinedlist-sync\` in your \`\$PATH\`. |
+
+          ### First-time setup
+
+          1. Edit \`~/.config/interlinedlist-sync/config.toml\` — set \`sync.watched_dirs\` and \`network.api_base_url\`.
+          2. Store credentials once: \`interlinedlist-sync --login --username you@example.com --password …\`
+          3. Start the daemon: \`interlinedlist-sync --daemon\`  (Linux: managed by the installed systemd user unit)
+
+          ### What changed
+
+          See the commit history for details.
+          EOF
+
+      - name: Create draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "InterlinedList Sync ${{ github.ref_name }}" \
+            --notes-file release-notes.md \
+            --draft \
+            release-artifacts/*

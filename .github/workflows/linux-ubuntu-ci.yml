@@ -99,7 +99,7 @@ jobs:
           workspaces: linux-ubuntu
 
       - name: Install cargo-deb
-        run: cargo install cargo-deb
+        run: cargo install cargo-deb --version "2.4.0"
 
       - name: Build .deb
         working-directory: linux-ubuntu

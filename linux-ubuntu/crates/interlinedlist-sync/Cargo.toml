@@ -26,7 +26,7 @@ dirs = { workspace = true }
 [package.metadata.deb]
 maintainer = "InterlinedList Team <support@interlinedlist.com>"
 copyright = "2026 InterlinedList"
-license-file = ["../../LICENSE", "0"]
+license-file = ["../../../LICENSE", "0"]
 extended-description = """\
 InterlinedList Sync watches local Markdown documents and keeps them in sync
 with your InterlinedList account via bidirectional synchronization."""
@@ -40,4 +40,3 @@ assets = [
     ["../../packaging/desktop/interlinedlist-sync.desktop", "usr/share/applications/", "644"],
     ["../../packaging/sysctl/60-interlinedlist-sync.conf", "etc/sysctl.d/", "644"],
 ]
-maintainer-scripts = "debian/"
