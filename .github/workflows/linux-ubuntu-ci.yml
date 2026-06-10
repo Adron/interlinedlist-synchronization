@@ -1,0 +1,113 @@
+name: Linux/Ubuntu CI
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'linux-ubuntu/**'
+      - '.github/workflows/linux-ubuntu-ci.yml'
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'linux-ubuntu/**'
+      - '.github/workflows/linux-ubuntu-ci.yml'
+
+jobs:
+  build-and-test:
+    name: Build & Test (Ubuntu)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            libayatana-appindicator3-dev \
+            libsecret-1-dev \
+            libdbus-1-dev \
+            libsqlite3-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: linux-ubuntu
+
+      - name: Check formatting
+        working-directory: linux-ubuntu
+        run: cargo fmt --check
+
+      - name: Clippy
+        working-directory: linux-ubuntu
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build
+        working-directory: linux-ubuntu
+        run: cargo build --release
+
+      - name: Run tests
+        working-directory: linux-ubuntu
+        run: cargo test --all
+
+      - name: Upload build artifacts
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: InterlinedSync-Linux-Ubuntu
+          path: linux-ubuntu/target/release/interlinedlist-sync
+          if-no-files-found: warn
+          retention-days: 30
+
+  build-deb:
+    name: Build .deb package
+    runs-on: ubuntu-22.04
+    needs: build-and-test
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            pkg-config \
+            libgtk-4-dev \
+            libadwaita-1-dev \
+            libayatana-appindicator3-dev \
+            libsecret-1-dev \
+            libdbus-1-dev \
+            libsqlite3-dev
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: linux-ubuntu
+
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Build .deb
+        working-directory: linux-ubuntu
+        run: cargo deb
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: InterlinedSync-deb
+          path: linux-ubuntu/target/debian/*.deb
+          retention-days: 30

@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="InterlinedSync.IntegrationTests/InterlinedSync.IntegrationTests.csproj" />
+  <Project Path="InterlinedSync.Tests/InterlinedSync.Tests.csproj" />
+  <Project Path="InterlinedSync/InterlinedSync.csproj" />
+</Solution>

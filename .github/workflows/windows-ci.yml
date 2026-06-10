@@ -1,0 +1,79 @@
+name: Windows CI
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows-ci.yml'
+  pull_request:
+    branches: [main, dev]
+    paths:
+      - 'windows/**'
+      - '.github/workflows/windows-ci.yml'
+
+jobs:
+  build-and-test:
+    name: Build & Test (Windows)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Restore packages
+        working-directory: windows
+        run: dotnet restore
+
+      - name: Build
+        working-directory: windows
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Run unit tests
+        working-directory: windows
+        run: >
+          dotnet test InterlinedSync.Tests/InterlinedSync.Tests.csproj
+          --configuration Release
+          --no-build
+          --logger "trx;LogFileName=unit-test-results.trx"
+          --collect:"XPlat Code Coverage"
+          --results-directory TestResults
+
+      - name: Run integration tests
+        working-directory: windows
+        run: >
+          dotnet test InterlinedSync.IntegrationTests/InterlinedSync.IntegrationTests.csproj
+          --configuration Release
+          --no-build
+          --logger "trx;LogFileName=integration-test-results.trx"
+          --results-directory TestResults
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-test-results
+          path: windows/TestResults/**/*.trx
+          retention-days: 14
+
+      - name: Upload coverage
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-coverage
+          path: windows/TestResults/**/coverage.cobertura.xml
+          retention-days: 14
+
+      - name: Upload build artifacts
+        if: github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: InterlinedSync-Windows
+          path: windows/InterlinedSync/bin/Release/net9.0-windows10.0.19041.0/
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,23 @@
+[package]
+name = "sync-engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+api-client = { path = "../api-client" }
+state-store = { path = "../state-store" }
+config-store = { path = "../config-store" }
+notifier = { path = "../notifier" }
+file-watcher = { path = "../file-watcher" }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+chrono = { workspace = true }
+dirs = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = "3"

@@ -1,0 +1,46 @@
+#include <tunables/global>
+
+/usr/bin/interlinedlist-sync flags=(attach_disconnected, mediate_deleted) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/ssl_certs>
+
+  /usr/bin/interlinedlist-sync  mr,
+
+  # Config — read/write (TOML config and token file)
+  owner @{HOME}/.config/interlinedlist-sync/   rw,
+  owner @{HOME}/.config/interlinedlist-sync/** rw,
+
+  # State DB
+  owner @{HOME}/.local/share/interlinedlist-sync/   rw,
+  owner @{HOME}/.local/share/interlinedlist-sync/** rw,
+
+  # Cache
+  owner @{HOME}/.cache/interlinedlist-sync/   rw,
+  owner @{HOME}/.cache/interlinedlist-sync/** rw,
+
+  # Runtime directory (PID, socket)
+  owner @{run}/user/[0-9]*/interlinedlist-sync/   rw,
+  owner @{run}/user/[0-9]*/interlinedlist-sync/** rw,
+
+  # Watched documents — read to compute hashes and upload
+  owner @{HOME}/Documents/InterlinedList/   r,
+  owner @{HOME}/Documents/InterlinedList/** rw,
+
+  # Outbound HTTPS
+  network inet  stream,
+  network inet6 stream,
+
+  # D-Bus session bus (GNOME Keyring, desktop notifications)
+  #include <abstractions/dbus-session-strict>
+  dbus send bus=session,
+
+  # systemd notification socket
+  /{,var/}run/systemd/notify rw,
+
+  # Proc
+  @{PROC}/self/status r,
+
+  deny /etc/shadow r,
+  deny @{HOME}/.ssh/** r,
+}

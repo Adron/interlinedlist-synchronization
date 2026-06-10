@@ -1,0 +1,16 @@
+[package]
+name = "notifier"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+libnotify = ["notify-rust"]
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+async-trait = { workspace = true }
+
+notify-rust = { version = "4", optional = true }

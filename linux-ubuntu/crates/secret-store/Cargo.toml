@@ -1,0 +1,21 @@
+[package]
+name = "secret-store"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = []
+gnome-keyring = ["secret-service"]
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+dirs = { workspace = true }
+async-trait = { workspace = true }
+
+# Optional GNOME Keyring backend
+secret-service = { version = "3", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

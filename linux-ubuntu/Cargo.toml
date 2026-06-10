@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/api-client",
+    "crates/state-store",
+    "crates/file-watcher",
+    "crates/sync-engine",
+    "crates/config-store",
+    "crates/secret-store",
+    "crates/notifier",
+    "crates/tray-app",
+    "crates/interlinedlist-sync",
+]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha2 = "0.10"
+hex = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+async-trait = "0.1"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"
