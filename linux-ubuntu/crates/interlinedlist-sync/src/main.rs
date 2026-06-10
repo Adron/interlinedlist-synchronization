@@ -72,6 +72,10 @@ async fn main() -> Result<()> {
     let account = cli.username.unwrap_or_else(|| "default".to_string());
 
     let api = Arc::new(ApiClient::new(make_api_config(&config), secret_store)?);
+    // StateStore wraps a rusqlite Connection (RefCell) and is !Sync. Arc is
+    // correct here: the engine runs in a LocalSet so the store never crosses
+    // thread boundaries despite being wrapped in Arc.
+    #[allow(clippy::arc_with_non_send_sync)]
     let state = Arc::new(
         StateStore::open(&StateStore::default_path()).context("failed to open state store")?,
     );

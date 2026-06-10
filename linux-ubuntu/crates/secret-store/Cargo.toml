@@ -19,3 +19,4 @@ secret-service = { version = "3", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+tempfile = "3"

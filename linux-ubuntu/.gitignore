@@ -1,0 +1,14 @@
+# ─── Rust / Cargo ────────────────────────────────────────────────────────────
+# All build output lives here (debug, release, incremental artifacts)
+target/
+
+# Rustfmt backup files
+**/*.rs.bk
+
+# ─── Packaging output ────────────────────────────────────────────────────────
+# Built installers are distributed via GitHub Releases, not committed
+packaging/*.deb
+packaging/*.rpm
+packaging/*.snap
+packaging/*.tar.gz
+dist/

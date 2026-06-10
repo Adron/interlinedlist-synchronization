@@ -400,6 +400,10 @@ mod tests {
     use notifier::StubNotifier;
     use tempfile::TempDir;
 
+    // StateStore holds a rusqlite Connection (RefCell) which is !Sync. Arc is
+    // used here deliberately: tests run on a single thread and never share the
+    // store across thread boundaries.
+    #[allow(clippy::arc_with_non_send_sync)]
     fn make_state(dir: &TempDir) -> Arc<StateStore> {
         Arc::new(StateStore::open(&dir.path().join("state.db")).unwrap())
     }

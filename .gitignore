@@ -1,62 +1,13 @@
 # ─── General ────────────────────────────────────────────────────────────────
 .DS_Store
-.idea
 Thumbs.db
 *.log
 *.tmp
 *.swp
 *~
 
-# ─── macOS / Xcode / Swift (macos/) ─────────────────────────────────────────
-macos/.build/
-macos/DerivedData/
-macos/*.xcodeproj/xcuserdata/
-macos/*.xcworkspace/xcuserdata/
-macos/*.xcworkspace/xcshareddata/IDEWorkspaceChecks.plist
-macos/*.xcworkspace/xcshareddata/swiftpm/
-macos/build/
-macos/*.resolved
-*.xcuserstate
-*.xcscheme
-macos/.swiftpm/
-
-# ─── Linux / Ubuntu (linux-ubuntu/) ─────────────────────────────────────────
-linux-ubuntu/bin/
-linux-ubuntu/obj/
-linux-ubuntu/build/
-linux-ubuntu/.cache/
-linux-ubuntu/dist/
-linux-ubuntu/__pycache__/
-linux-ubuntu/*.pyc
-linux-ubuntu/node_modules/
-linux-ubuntu/vendor/
-
-# ─── Windows (windows/) ──────────────────────────────────────────────────────
-windows/bin/
-windows/obj/
-windows/build/
-windows/dist/
-windows/.vs/
-windows/*.user
-windows/*.suo
-windows/[Dd]ebug/
-windows/[Rr]elease/
-windows/x64/
-windows/x86/
-windows/[Aa][Rr][Mm]/
-windows/[Aa][Rr][Mm]64/
-windows/*.exe
-windows/*.pdb
-windows/*.ilk
-windows/node_modules/
-windows/vendor/
-
-# ─── Go (shared across platforms if applicable) ───────────────────────────────
-*.test
-*.out
-go.sum.bak
-
 # ─── IDE / editor ────────────────────────────────────────────────────────────
+# Platform-specific build ignores live in macos/, windows/, and linux-ubuntu/
 .idea/
 .vscode/
 *.iml

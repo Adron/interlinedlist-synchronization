@@ -1,0 +1,41 @@
+# ─── .NET build output ───────────────────────────────────────────────────────
+# Matches bin/ and obj/ inside any project subdirectory (e.g. InterlinedSync/bin/)
+bin/
+obj/
+
+# ─── Visual Studio ───────────────────────────────────────────────────────────
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# ─── NuGet ───────────────────────────────────────────────────────────────────
+*.nupkg
+*.snupkg
+.nuget/
+packages/
+
+# ─── Build configuration artifacts ───────────────────────────────────────────
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+
+# ─── Compiled output ─────────────────────────────────────────────────────────
+*.exe
+*.pdb
+*.ilk
+
+# ─── Test results ────────────────────────────────────────────────────────────
+TestResults/
+
+# ─── Packaging / distribution output ─────────────────────────────────────────
+# Built installers are distributed via GitHub Releases, not committed
+build/
+dist/
+*.msix
+*.appx
+*.appxbundle
