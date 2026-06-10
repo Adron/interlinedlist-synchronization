@@ -2,12 +2,12 @@ name: Linux/Ubuntu CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main, dev]
     paths:
       - 'linux-ubuntu/**'
       - '.github/workflows/linux-ubuntu-ci.yml'
   pull_request:
-    branches: [main, develop]
+    branches: [main, dev]
     paths:
       - 'linux-ubuntu/**'
       - '.github/workflows/linux-ubuntu-ci.yml'
