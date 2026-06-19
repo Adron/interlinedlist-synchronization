@@ -9,7 +9,10 @@ let package = Package(
     targets: [
         .executableTarget(
             name: "InterlinedSync",
-            path: "Sources/InterlinedSync"
+            path: "Sources/InterlinedSync",
+            resources: [
+                .process("Resources")
+            ]
         ),
         .testTarget(
             name: "InterlinedSyncTests",

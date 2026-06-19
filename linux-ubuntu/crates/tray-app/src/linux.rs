@@ -1,3 +1,5 @@
+use std::sync::OnceLock;
+
 use anyhow::Result;
 use ksni::menu::{MenuItem, StandardItem};
 use ksni::Tray;
@@ -6,6 +8,40 @@ use tracing::info;
 
 use sync_engine::SyncStatus;
 
+// Relative path from src/ up four levels to the repo root, then into logo/.
+const TRAY_ICON_PNG: &[u8] =
+    include_bytes!("../../../../logo/interlinedlist-logo-only-transparent.png");
+
+const ICON_SIZE: u32 = 22;
+
+fn tray_icon() -> &'static Vec<ksni::Icon> {
+    static ICON: OnceLock<Vec<ksni::Icon>> = OnceLock::new();
+    ICON.get_or_init(|| {
+        let img = image::load_from_memory(TRAY_ICON_PNG)
+            .expect("embedded tray icon PNG is valid")
+            .into_rgba8();
+        let resized = image::imageops::resize(
+            &img,
+            ICON_SIZE,
+            ICON_SIZE,
+            image::imageops::FilterType::Lanczos3,
+        );
+        // ksni expects ARGB byte order; `image` gives RGBA — swap each pixel.
+        let argb: Vec<u8> = resized
+            .pixels()
+            .flat_map(|p| {
+                let [r, g, b, a] = p.0;
+                [a, r, g, b]
+            })
+            .collect();
+        vec![ksni::Icon {
+            width: ICON_SIZE as i32,
+            height: ICON_SIZE as i32,
+            data: argb,
+        }]
+    })
+}
+
 struct InterlinedTray {
     status_rx: watch::Receiver<SyncStatus>,
     sync_now_tx: tokio::sync::mpsc::Sender<()>,
@@ -13,15 +49,11 @@ struct InterlinedTray {
 }
 
 impl Tray for InterlinedTray {
-    fn icon_name(&self) -> String {
-        let status = self.status_rx.borrow();
-        match &*status {
-            SyncStatus::Idle => "dialog-information",
-            SyncStatus::Syncing => "emblem-synchronizing",
-            SyncStatus::Paused => "media-playback-pause",
-            SyncStatus::Error(_) => "dialog-error",
-        }
-        .to_string()
+    // icon_name intentionally omitted — default empty string causes StatusNotifier
+    // clients to fall back to icon_pixmap(), which delivers our ARGB pixel data.
+
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        tray_icon().clone()
     }
 
     fn title(&self) -> String {

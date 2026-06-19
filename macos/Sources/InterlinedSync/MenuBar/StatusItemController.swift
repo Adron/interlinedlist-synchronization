@@ -21,13 +21,21 @@ final class StatusItemController: NSObject {
     }
 
     private func configureButton() {
-        if let button = statusItem.button {
-            let image = NSImage(
+        guard let button = statusItem.button else { return }
+
+        if let url = Bundle.module.url(forResource: "tray-icon", withExtension: "png"),
+           let image = NSImage(contentsOf: url) {
+            // isTemplate false keeps the colored brand logo rather than a monochrome template.
+            image.isTemplate = false
+            button.image = image
+            button.imageScaling = .scaleProportionallyDown
+        } else {
+            let fallback = NSImage(
                 systemSymbolName: "arrow.triangle.2.circlepath",
                 accessibilityDescription: "InterlinedList Sync"
             )
-            image?.isTemplate = true
-            button.image = image
+            fallback?.isTemplate = true
+            button.image = fallback
         }
     }
 

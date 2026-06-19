@@ -8,6 +8,7 @@ edition = "2021"
 # GTK4/libadwaita are reserved for the M4 settings dialog.
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = "0.2"
+image = { version = "0.25", default-features = false, features = ["png"] }
 
 [dependencies]
 sync-engine = { path = "../sync-engine" }
