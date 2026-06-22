@@ -1,4 +1,3 @@
-use anyhow::Result;
 use async_trait::async_trait;
 use secret_service::{EncryptionType, SecretService};
 use tracing::debug;
@@ -12,6 +11,21 @@ pub struct KeyringSecretStore;
 impl KeyringSecretStore {
     pub fn new() -> Self {
         Self
+    }
+
+    /// Attempt to connect to GNOME Keyring and open the default collection.
+    /// Returns `Ok(Self)` if the keyring is reachable, `Err` if not.
+    /// Call this at startup and fall back to `FileSecretStore` on error.
+    pub async fn new_checked() -> Result<Self, SecretStoreError> {
+        let ss = SecretService::connect(EncryptionType::Dh)
+            .await
+            .map_err(|e| SecretStoreError::Keyring(e.to_string()))?;
+        // Verify the default collection is accessible. This fails, e.g., when
+        // no keyring daemon is running (headless / SSH session).
+        ss.get_default_collection()
+            .await
+            .map_err(|e| SecretStoreError::Keyring(e.to_string()))?;
+        Ok(Self)
     }
 }
 

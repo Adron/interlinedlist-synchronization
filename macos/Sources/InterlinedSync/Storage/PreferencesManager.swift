@@ -10,6 +10,12 @@ final class PreferencesManager: ObservableObject {
 
     private static let bookmarkKey = "syncFolderBookmark"
 
+    /// Poll cadence the SyncEngine uses, in seconds. Derived from the user-facing minutes
+    /// preference with a 30-second floor so an aggressive setting can't hammer the server.
+    var pollIntervalSeconds: TimeInterval {
+        max(30, TimeInterval(syncIntervalMinutes) * 60)
+    }
+
     func selectSyncFolder() async -> URL? {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false

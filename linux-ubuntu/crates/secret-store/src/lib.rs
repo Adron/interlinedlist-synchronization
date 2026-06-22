@@ -4,6 +4,9 @@ use thiserror::Error;
 
 pub mod file_store;
 
+// The keyring_store module requires the gnome-keyring feature to be enabled.
+// The secret-service crate (its underlying dependency) compiles cross-platform
+// but only connects to a D-Bus session at runtime on Linux.
 #[cfg(feature = "gnome-keyring")]
 pub mod keyring_store;
 

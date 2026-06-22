@@ -33,6 +33,61 @@ struct DocumentMapper: Sendable {
             }
     }
 
+    /// Returns the body and last-modified date of a tracked file, used when pushing local edits.
+    func read(at fileURL: URL) throws -> (body: String, modifiedAt: Date) {
+        let body: String
+        do {
+            body = try String(contentsOf: fileURL, encoding: .utf8)
+        } catch {
+            throw SyncError.fileSystem(error)
+        }
+        return (body: body, modifiedAt: modificationDate(of: fileURL))
+    }
+
+    /// The title derived from a file's name (the filename without the `.md` extension).
+    func title(for fileURL: URL) -> String {
+        fileURL.deletingPathExtension().lastPathComponent
+    }
+
+    /// The file's modification date, falling back to `.distantPast` when unavailable.
+    func modificationDate(of fileURL: URL) -> Date {
+        let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+        return (attributes?[.modificationDate] as? Date) ?? .distantPast
+    }
+
+    /// Removes the local file backing a document ID, if one exists.
+    func deleteLocalFile(id: String) throws {
+        guard let url = try findExisting(id: id) else { return }
+        do {
+            try FileManager.default.removeItem(at: url)
+        } catch {
+            throw SyncError.fileSystem(error)
+        }
+    }
+
+    /// Writes a copy of the local file alongside the original with a `.conflict-<timestamp>.md`
+    /// suffix and returns the URL of the copy. Used by `ConflictResolver` to preserve local edits.
+    @discardableResult
+    func writeConflictCopy(of fileURL: URL, body: String, at date: Date) throws -> URL {
+        let stamp = Self.conflictTimestampFormatter.string(from: date)
+        let base = fileURL.deletingPathExtension().lastPathComponent
+        let copyURL = rootURL.appendingPathComponent("\(base).conflict-\(stamp).md")
+        do {
+            try body.write(to: copyURL, atomically: true, encoding: .utf8)
+        } catch {
+            throw SyncError.fileSystem(error)
+        }
+        return copyURL
+    }
+
+    private static let conflictTimestampFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        return formatter
+    }()
+
     // MARK: - Private
 
     private func resolveURL(for document: DocumentDTO) throws -> URL {

@@ -6,13 +6,23 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use tokio::sync::mpsc;
 use tracing::{error, info};
+#[cfg(target_os = "linux")]
+use tracing::warn;
 use tracing_subscriber::EnvFilter;
 
 use api_client::{ApiClient, ApiClientConfig, ApiClientTrait};
 use config_store::ConfigStore;
 use file_watcher::FileWatcher;
+#[cfg(not(target_os = "linux"))]
 use notifier::StubNotifier;
-use secret_store::{FileSecretStore, SecretStore};
+#[cfg(target_os = "linux")]
+use notifier::LibnotifyNotifier;
+use secret_store::FileSecretStore;
+// interlinedlist-sync's Cargo.toml enables secret-store's `gnome-keyring` feature only on
+// Linux, so KeyringSecretStore is only available when compiling for Linux.
+#[cfg(target_os = "linux")]
+use secret_store::KeyringSecretStore;
+use secret_store::SecretStore;
 use state_store::StateStore;
 use sync_engine::SyncEngine;
 use tray_app::run_tray_app;
@@ -56,7 +66,24 @@ async fn main() -> Result<()> {
     let config_store = ConfigStore::new(config_path);
     let config = config_store.load_or_default()?;
 
-    let secret_store = Arc::new(FileSecretStore::default_store());
+    // On Linux, prefer GNOME Keyring; fall back to file store if keyring init fails
+    // (e.g., headless SSH sessions without a keyring daemon running).
+    // On non-Linux hosts, always use the file store.
+    #[cfg(target_os = "linux")]
+    let secret_store: Arc<dyn SecretStore> = {
+        match KeyringSecretStore::new_checked().await {
+            Ok(ks) => {
+                info!("using GNOME Keyring for credential storage");
+                Arc::new(ks)
+            }
+            Err(e) => {
+                warn!("GNOME Keyring unavailable ({e}), falling back to file secret store");
+                Arc::new(FileSecretStore::default_store())
+            }
+        }
+    };
+    #[cfg(not(target_os = "linux"))]
+    let secret_store: Arc<dyn SecretStore> = Arc::new(FileSecretStore::default_store());
 
     if cli.login {
         let username = cli.username.context("--username required with --login")?;
@@ -79,7 +106,16 @@ async fn main() -> Result<()> {
     let state = Arc::new(
         StateStore::open(&StateStore::default_path()).context("failed to open state store")?,
     );
-    let notifier = Arc::new(StubNotifier);
+
+    // On Linux, use the real libnotify backend. On other platforms (macOS dev
+    // machines) fall back to the no-op StubNotifier so the workspace compiles.
+    #[cfg(target_os = "linux")]
+    let notifier = {
+        let n = LibnotifyNotifier::new("InterlinedList Sync");
+        Arc::new(n) as Arc<dyn notifier::Notifier>
+    };
+    #[cfg(not(target_os = "linux"))]
+    let notifier = Arc::new(StubNotifier) as Arc<dyn notifier::Notifier>;
 
     let (mut file_watcher, file_rx) =
         FileWatcher::new(256).context("failed to create file watcher")?;
@@ -93,8 +129,9 @@ async fn main() -> Result<()> {
         }
     }
 
-    // sync_now_rx will be wired to the engine in M4 to allow tray-triggered syncs.
-    let (sync_now_tx, _sync_now_rx) = mpsc::channel::<()>(8);
+    // sync_now_rx is passed into SyncEngine::run() so the tray "Sync Now" menu
+    // item triggers an immediate remote poll via tokio::select! in the engine loop.
+    let (sync_now_tx, sync_now_rx) = mpsc::channel::<()>(8);
 
     let engine = SyncEngine::new(
         config.clone(),
@@ -113,7 +150,7 @@ async fn main() -> Result<()> {
         local
             .run_until(async move {
                 let engine_task = tokio::task::spawn_local(async move {
-                    if let Err(e) = engine.run().await {
+                    if let Err(e) = engine.run(sync_now_rx).await {
                         error!("sync engine exited with error: {e}");
                     }
                 });
@@ -124,6 +161,8 @@ async fn main() -> Result<()> {
             .await?;
     } else {
         // Headless mode: run one poll cycle then exit.
+        // sync_now_rx is not needed in headless mode; drop it to close the channel.
+        drop(sync_now_rx);
         info!("headless mode: running one poll cycle");
         if let Err(e) = engine.poll_remote().await {
             error!("poll failed: {e}");

@@ -20,6 +20,25 @@ enum SyncStatus: Equatable, Sendable {
 final class SyncState: ObservableObject {
     @Published var status: SyncStatus = .idle
     @Published var lastSyncedAt: Date?
+    @Published var errorMessage: String?
 
-    // TODO: Phase 2 — drive these from SyncEngine cycle results.
+    func beginSync() {
+        status = .syncing
+        errorMessage = nil
+    }
+
+    func finishSync(at date: Date) {
+        status = .idle
+        lastSyncedAt = date
+        errorMessage = nil
+    }
+
+    func fail(_ message: String) {
+        status = .error(message)
+        errorMessage = message
+    }
+
+    func paused() {
+        status = .paused
+    }
 }

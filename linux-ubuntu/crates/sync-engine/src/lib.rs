@@ -74,7 +74,12 @@ impl SyncEngine {
         self.status_rx.clone()
     }
 
-    pub async fn run(mut self) -> Result<()> {
+    /// Run the sync engine event loop.
+    ///
+    /// `sync_now_rx` receives a `()` whenever the tray "Sync Now" action fires.
+    /// Each received signal triggers an immediate remote poll in addition to the
+    /// normal periodic ticker, so the two paths share the same poll logic.
+    pub async fn run(mut self, mut sync_now_rx: mpsc::Receiver<()>) -> Result<()> {
         let poll_interval = Duration::from_secs(self.config.sync.interval_seconds);
         let mut poll_ticker = tokio::time::interval(poll_interval);
         poll_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -99,6 +104,17 @@ impl SyncEngine {
                     }
                     if let Err(e) = self.poll_remote().await {
                         error!("remote poll failed: {e}");
+                        self.set_status(SyncStatus::Error(e.to_string())).await;
+                    }
+                }
+                Some(()) = sync_now_rx.recv() => {
+                    if *self.paused.read().await {
+                        debug!("sync paused, ignoring manual sync-now request");
+                        continue;
+                    }
+                    info!("manual sync triggered from tray");
+                    if let Err(e) = self.poll_remote().await {
+                        error!("manual poll failed: {e}");
                         self.set_status(SyncStatus::Error(e.to_string())).await;
                     }
                 }

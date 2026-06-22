@@ -3,6 +3,7 @@ using System.IO.Abstractions;
 using InterlinedSync.API;
 using InterlinedSync.Auth;
 using InterlinedSync.Configuration;
+using InterlinedSync.FileSystem;
 using InterlinedSync.Storage;
 using InterlinedSync.Sync;
 using InterlinedSync.SystemTray;
@@ -12,6 +13,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Serilog;
+using FileSystemImpl = System.IO.Abstractions.FileSystem;
 
 namespace InterlinedSync;
 
@@ -29,6 +31,11 @@ public static class Program
             AppConstants.AppDataFolderName);
         Directory.CreateDirectory(appDataDir);
 
+        var localAppDataDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            AppConstants.AppDataFolderName);
+        Directory.CreateDirectory(localAppDataDir);
+
         var settingsPath = Path.Combine(appDataDir, AppConstants.AppSettingsFileName);
 
         var builder = Host.CreateApplicationBuilder(args ?? Array.Empty<string>());
@@ -38,20 +45,17 @@ public static class Program
             .AddJsonFile(AppConstants.AppSettingsFileName, optional: true, reloadOnChange: true)
             .AddEnvironmentVariables(prefix: "INTERLINEDSYNC_");
 
-        ConfigureSerilog(builder);
+        ConfigureSerilog(builder, localAppDataDir);
 
         ConfigureOptions(builder);
-        ConfigureServices(builder);
+        ConfigureServices(builder, localAppDataDir);
 
         return builder.Build();
     }
 
-    private static void ConfigureSerilog(HostApplicationBuilder builder)
+    private static void ConfigureSerilog(HostApplicationBuilder builder, string localAppDataDir)
     {
-        var logDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            AppConstants.AppDataFolderName,
-            AppConstants.LogsFolderName);
+        var logDir = Path.Combine(localAppDataDir, AppConstants.LogsFolderName);
         Directory.CreateDirectory(logDir);
 
         var logger = new LoggerConfiguration()
@@ -74,7 +78,20 @@ public static class Program
     {
         builder.Services
             .AddOptions<SyncPreferences>()
-            .Bind(builder.Configuration.GetSection(SyncPreferences.SectionName));
+            .Bind(builder.Configuration.GetSection(SyncPreferences.SectionName))
+            .PostConfigure(o =>
+            {
+                if (string.IsNullOrEmpty(o.SyncFolder))
+                {
+                    o.SyncFolder = Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                        AppConstants.DefaultSyncFolderName);
+                }
+                if (o.PollIntervalSeconds < AppConstants.MinimumPollIntervalSeconds)
+                {
+                    o.PollIntervalSeconds = AppConstants.DefaultPollIntervalSeconds;
+                }
+            });
 
         builder.Services
             .AddOptions<ApiOptions>()
@@ -92,11 +109,11 @@ public static class Program
             });
     }
 
-    private static void ConfigureServices(HostApplicationBuilder builder)
+    private static void ConfigureServices(HostApplicationBuilder builder, string localAppDataDir)
     {
         var services = builder.Services;
 
-        services.AddSingleton<IFileSystem, FileSystem>();
+        services.AddSingleton<IFileSystem, FileSystemImpl>();
         services.AddSingleton<IPreferencesStore, PreferencesManager>();
 
 #if WINDOWS_BUILD
@@ -108,9 +125,18 @@ public static class Program
         services.AddSingleton<IAuthProvider, AuthManager>();
         services.AddSingleton<ISyncStateNotifier, SyncStateNotifier>();
 
+        var dbPath = Path.Combine(localAppDataDir, "state.db");
+        services.AddSingleton<ISyncStateRepository>(sp =>
+            new SyncStateRepository(dbPath, sp.GetRequiredService<ILogger<SyncStateRepository>>()));
+
+        services.AddSingleton<IFileMapper, FileMapper>();
+
         services.AddTransient<BearerTokenHandler>();
         services.AddHttpClient<IInterlinedListClient, InterlinedListClient>()
             .AddHttpMessageHandler<BearerTokenHandler>();
+
+        services.AddSingleton<SyncEngine>();
+        services.AddHostedService(sp => sp.GetRequiredService<SyncEngine>());
 
 #if WINDOWS_BUILD
         services.AddSingleton<TrayMenuBuilder>();

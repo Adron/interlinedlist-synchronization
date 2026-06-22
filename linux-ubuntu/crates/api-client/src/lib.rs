@@ -511,4 +511,69 @@ mod tests {
             .await
             .unwrap();
     }
+
+    /// Verify that a transient 503 is retried and the second 200 response succeeds.
+    /// The test client is configured with `max_retries = 2` and a 10ms backoff base
+    /// so the retry happens quickly without slowing the test suite.
+    #[tokio::test]
+    async fn retry_on_503_then_succeeds_on_200() {
+        let mut ctx = make_context().await;
+        let doc_body = r##"{"id":"doc-r","title":"Retry","content":"# Retry","updated_at":"2026-01-01T00:00:00Z","sha256":null}"##;
+
+        // First request: 503 — should trigger retry.
+        let _m503 = ctx
+            .server
+            .mock("GET", "/documents/doc-r")
+            .with_status(503)
+            .create_async()
+            .await;
+
+        // Second request: 200 with a valid body.
+        let _m200 = ctx
+            .server
+            .mock("GET", "/documents/doc-r")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(doc_body)
+            .create_async()
+            .await;
+
+        let doc = ctx
+            .client
+            .get_document(&ctx.account, "doc-r")
+            .await
+            .unwrap();
+        assert_eq!(doc.id, "doc-r");
+        assert_eq!(doc.title, "Retry");
+    }
+
+    /// A second 503 with `max_retries = 2` should exhaust retries and return an error.
+    #[tokio::test]
+    async fn retries_exhausted_returns_error() {
+        let mut ctx = make_context().await;
+
+        // Both mock requests return 503, exhausting the two allowed attempts.
+        let _m1 = ctx
+            .server
+            .mock("GET", "/documents/doc-x")
+            .with_status(503)
+            .create_async()
+            .await;
+        let _m2 = ctx
+            .server
+            .mock("GET", "/documents/doc-x")
+            .with_status(503)
+            .create_async()
+            .await;
+
+        let err = ctx
+            .client
+            .get_document(&ctx.account, "doc-x")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ApiError::RetriesExhausted { .. }),
+            "expected RetriesExhausted, got {err:?}"
+        );
+    }
 }

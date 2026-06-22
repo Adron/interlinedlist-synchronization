@@ -340,4 +340,45 @@ mod tests {
         assert!(found.is_some());
         assert_eq!(found.unwrap().local_path, path);
     }
+
+    #[test]
+    fn lookup_by_server_id_missing_returns_none() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir);
+        let found = store.lookup_by_server_id("no-such-id").unwrap();
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn list_all_returns_all_records() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir);
+        let p1 = PathBuf::from("/docs/a.md");
+        let p2 = PathBuf::from("/docs/b.md");
+        store.upsert(&p1, Some("s1"), Some("h1")).unwrap();
+        store.upsert(&p2, Some("s2"), Some("h2")).unwrap();
+
+        let all = store.list_all().unwrap();
+        assert_eq!(all.len(), 2);
+        let paths: Vec<_> = all.iter().map(|r| r.local_path.clone()).collect();
+        assert!(paths.contains(&p1));
+        assert!(paths.contains(&p2));
+    }
+
+    #[test]
+    fn set_pending_op_download_then_delete() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir);
+        let path = PathBuf::from("/docs/change.md");
+        store.upsert(&path, Some("srv-99"), None).unwrap();
+
+        store.set_pending_op(&path, &PendingOp::Download).unwrap();
+        assert_eq!(store.lookup(&path).unwrap().pending_op, PendingOp::Download);
+
+        store.set_pending_op(&path, &PendingOp::Delete).unwrap();
+        assert_eq!(store.lookup(&path).unwrap().pending_op, PendingOp::Delete);
+
+        store.set_pending_op(&path, &PendingOp::None).unwrap();
+        assert_eq!(store.lookup(&path).unwrap().pending_op, PendingOp::None);
+    }
 }

@@ -13,8 +13,6 @@ state-store = { path = "../state-store" }
 file-watcher = { path = "../file-watcher" }
 sync-engine = { path = "../sync-engine" }
 config-store = { path = "../config-store" }
-secret-store = { path = "../secret-store" }
-notifier = { path = "../notifier" }
 tray-app = { path = "../tray-app" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
@@ -22,6 +20,15 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 clap = { workspace = true }
 dirs = { workspace = true }
+
+# Enable GNOME Keyring and libnotify on Linux; fall back to file store + stub on other hosts.
+[target.'cfg(target_os = "linux")'.dependencies]
+secret-store = { path = "../secret-store", features = ["gnome-keyring"] }
+notifier = { path = "../notifier", features = ["libnotify"] }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+secret-store = { path = "../secret-store" }
+notifier = { path = "../notifier" }
 
 [package.metadata.deb]
 maintainer = "InterlinedList Team <support@interlinedlist.com>"

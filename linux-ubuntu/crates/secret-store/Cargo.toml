@@ -5,6 +5,9 @@ edition = "2021"
 
 [features]
 default = []
+# gnome-keyring enables the GNOME Keyring / libsecret backend.
+# secret-service depends on zbus which uses D-Bus; it compiles on macOS
+# (no D-Bus headers required) but only connects at runtime on Linux.
 gnome-keyring = ["secret-service"]
 
 [dependencies]
@@ -14,7 +17,6 @@ tracing = { workspace = true }
 dirs = { workspace = true }
 async-trait = { workspace = true }
 
-# Optional GNOME Keyring backend
 secret-service = { version = "3", optional = true }
 
 [dev-dependencies]

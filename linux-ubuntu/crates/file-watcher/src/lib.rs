@@ -144,7 +144,24 @@ fn classify_event(kind: &notify::EventKind, path: PathBuf) -> Option<FileEvent> 
 }
 
 #[cfg(test)]
-mod tests {
+mod unit_tests {
+    use super::*;
+
+    // Pure logic tests — no inotify, run on all platforms.
+    #[test]
+    fn is_markdown_recognises_md_extension() {
+        assert!(is_markdown(Path::new("/docs/note.md")));
+        assert!(is_markdown(Path::new("/docs/note.MD")));
+        assert!(!is_markdown(Path::new("/docs/note.txt")));
+        assert!(!is_markdown(Path::new("/docs/note")));
+    }
+}
+
+// inotify-backed integration tests require a Linux kernel.
+// These are compiled and run only on Linux CI; on macOS dev machines
+// they are excluded to avoid spurious failures.
+#[cfg(all(test, target_os = "linux"))]
+mod integration_tests {
     use super::*;
     use std::time::Duration;
     use tempfile::TempDir;
@@ -195,11 +212,26 @@ mod tests {
         assert!(result.is_err(), "non-markdown file should produce no event");
     }
 
-    #[test]
-    fn is_markdown_recognises_md_extension() {
-        assert!(is_markdown(Path::new("/docs/note.md")));
-        assert!(is_markdown(Path::new("/docs/note.MD")));
-        assert!(!is_markdown(Path::new("/docs/note.txt")));
-        assert!(!is_markdown(Path::new("/docs/note")));
+    #[tokio::test]
+    async fn delete_event_emitted_for_markdown_file() {
+        let dir = TempDir::new().unwrap();
+        let md_file = dir.path().join("remove_me.md");
+        std::fs::write(&md_file, "# to be deleted").unwrap();
+
+        let (mut watcher, mut rx) = FileWatcher::new(32).unwrap();
+        watcher.watch(dir.path()).unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        std::fs::remove_file(&md_file).unwrap();
+
+        let timeout = Duration::from_millis(1500);
+        let result = tokio::time::timeout(timeout, rx.recv()).await;
+        assert!(result.is_ok(), "expected a delete event within timeout");
+        let event = result.unwrap().unwrap();
+        assert!(
+            matches!(event, FileEvent::Deleted(_)),
+            "expected Deleted event, got {event:?}"
+        );
+        assert_eq!(event.path(), md_file.as_path());
     }
 }
