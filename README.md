@@ -1,5 +1,10 @@
 # InterlinedList Synchronization
 
+[![macOS CI](https://github.com/Adron/interlinedlist-synchronization/actions/workflows/macos-ci.yml/badge.svg)](https://github.com/Adron/interlinedlist-synchronization/actions/workflows/macos-ci.yml)
+[![Windows CI](https://github.com/Adron/interlinedlist-synchronization/actions/workflows/windows-ci.yml/badge.svg)](https://github.com/Adron/interlinedlist-synchronization/actions/workflows/windows-ci.yml)
+[![Linux CI](https://github.com/Adron/interlinedlist-synchronization/actions/workflows/linux-ubuntu-ci.yml/badge.svg)](https://github.com/Adron/interlinedlist-synchronization/actions/workflows/linux-ubuntu-ci.yml)
+[![Release](https://github.com/Adron/interlinedlist-synchronization/actions/workflows/release.yml/badge.svg)](https://github.com/Adron/interlinedlist-synchronization/actions/workflows/release.yml)
+
 A monorepo containing three native desktop sync clients — one per platform — for the [InterlinedList](https://interlinedlist.com) web application.
 
 ## What This Is
