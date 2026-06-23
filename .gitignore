@@ -6,6 +6,11 @@ Thumbs.db
 *.swp
 *~
 
+# ─── Secrets ─────────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
 # ─── IDE / editor ────────────────────────────────────────────────────────────
 # Platform-specific build ignores live in macos/, windows/, and linux-ubuntu/
 .idea/
