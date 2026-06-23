@@ -196,10 +196,7 @@ mod tests {
     #[tokio::test]
     async fn in_memory_delete_then_load_returns_not_found() {
         let store = InMemorySecretStore::new();
-        store
-            .store_token("user@example.com", "tok")
-            .await
-            .unwrap();
+        store.store_token("user@example.com", "tok").await.unwrap();
         store.delete_token("user@example.com").await.unwrap();
         let err = store.load_token("user@example.com").await.unwrap_err();
         assert!(matches!(err, SecretStoreError::NotFound { .. }));

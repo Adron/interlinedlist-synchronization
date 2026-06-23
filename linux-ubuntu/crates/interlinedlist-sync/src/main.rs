@@ -5,18 +5,18 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use clap::Parser;
 use tokio::sync::mpsc;
-use tracing::{error, info};
 #[cfg(target_os = "linux")]
 use tracing::warn;
+use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 use api_client::{ApiClient, ApiClientConfig, ApiClientTrait};
 use config_store::ConfigStore;
 use file_watcher::FileWatcher;
-#[cfg(not(target_os = "linux"))]
-use notifier::StubNotifier;
 #[cfg(target_os = "linux")]
 use notifier::LibnotifyNotifier;
+#[cfg(not(target_os = "linux"))]
+use notifier::StubNotifier;
 use secret_store::FileSecretStore;
 // interlinedlist-sync's Cargo.toml enables secret-store's `gnome-keyring` feature only on
 // Linux, so KeyringSecretStore is only available when compiling for Linux.

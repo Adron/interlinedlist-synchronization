@@ -54,6 +54,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         syncEngine = engine
 
         statusItemController = StatusItemController(
+            presenter: AppKitStatusItemPresenter(),
             preferences: preferences,
             state: syncState,
             coordinator: engine
@@ -67,7 +68,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func presentOnboarding() {
-        statusItemController = StatusItemController(preferences: preferences, state: syncState)
+        statusItemController = StatusItemController(
+            presenter: AppKitStatusItemPresenter(),
+            preferences: preferences,
+            state: syncState
+        )
 
         let view = OnboardingView(authManager: authManager, preferences: preferences) { [weak self] in
             self?.onboardingWindow?.close()

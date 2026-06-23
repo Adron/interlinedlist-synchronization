@@ -79,10 +79,26 @@ fn build_and_show_settings(config_path: PathBuf) {
         .default_height(500)
         .build();
 
-    window.add(&build_folders_page(&config, config_path.clone(), window.clone().upcast()));
-    window.add(&build_sync_page(&config, config_path.clone(), window.clone().upcast()));
-    window.add(&build_notifications_page(&config, config_path.clone(), window.clone().upcast()));
-    window.add(&build_account_page(&config, config_path, window.clone().upcast()));
+    window.add(&build_folders_page(
+        &config,
+        config_path.clone(),
+        window.clone().upcast(),
+    ));
+    window.add(&build_sync_page(
+        &config,
+        config_path.clone(),
+        window.clone().upcast(),
+    ));
+    window.add(&build_notifications_page(
+        &config,
+        config_path.clone(),
+        window.clone().upcast(),
+    ));
+    window.add(&build_account_page(
+        &config,
+        config_path,
+        window.clone().upcast(),
+    ));
 
     window.present();
 }
@@ -164,9 +180,7 @@ fn build_sync_page(
 
     let conflict_group = libadwaita::PreferencesGroup::builder()
         .title("Conflict Resolution")
-        .description(
-            "What to do when the same document is modified both locally and remotely.",
-        )
+        .description("What to do when the same document is modified both locally and remotely.")
         .build();
 
     let remote_wins_row = libadwaita::ActionRow::builder()
@@ -181,9 +195,7 @@ fn build_sync_page(
         .build();
 
     let radio_remote = gtk4::CheckButton::new();
-    let radio_copy = gtk4::CheckButton::builder()
-        .group(&radio_remote)
-        .build();
+    let radio_copy = gtk4::CheckButton::builder().group(&radio_remote).build();
 
     match config.sync.conflict_resolution {
         ConflictResolution::RemoteWins => radio_remote.set_active(true),
@@ -301,7 +313,11 @@ fn build_account_page(
         .title("Signed-in Account")
         .build();
 
-    let api_url = config.network.api_base_url.trim_end_matches('/').to_string();
+    let api_url = config
+        .network
+        .api_base_url
+        .trim_end_matches('/')
+        .to_string();
     let account_row = libadwaita::ActionRow::builder()
         .title("Server")
         .subtitle(&api_url)
@@ -368,11 +384,7 @@ fn do_logout(config_path: &PathBuf, _window: &gtk4::Window) {
     // Remove .token-* files written by FileSecretStore.
     if let Ok(entries) = std::fs::read_dir(&token_dir) {
         for entry in entries.flatten() {
-            if entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with(".token-")
-            {
+            if entry.file_name().to_string_lossy().starts_with(".token-") {
                 let _ = std::fs::remove_file(entry.path());
             }
         }

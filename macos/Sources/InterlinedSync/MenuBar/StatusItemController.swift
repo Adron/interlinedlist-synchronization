@@ -4,7 +4,7 @@ import SwiftUI
 
 @MainActor
 final class StatusItemController: NSObject {
-    private let statusItem: NSStatusItem
+    private let presenter: StatusItemPresenting
     private let preferences: PreferencesManager
     private let state: SyncState
     private let coordinator: SyncCoordinating?
@@ -23,14 +23,15 @@ final class StatusItemController: NSObject {
     }()
 
     init(
+        presenter: StatusItemPresenting,
         preferences: PreferencesManager,
         state: SyncState,
         coordinator: SyncCoordinating? = nil
     ) {
+        self.presenter = presenter
         self.preferences = preferences
         self.state = state
         self.coordinator = coordinator
-        self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
         configureMenu()
@@ -91,7 +92,7 @@ final class StatusItemController: NSObject {
         quitItem.target = self
         menu.addItem(quitItem)
 
-        statusItem.menu = menu
+        presenter.attach(menu: menu)
     }
 
     func render(status: SyncStatus, lastSyncedAt: Date?) {
@@ -120,17 +121,11 @@ final class StatusItemController: NSObject {
     }
 
     private func applyIcon(for status: SyncStatus) {
-        guard let button = statusItem.button else { return }
         let descriptor = Self.iconDescriptor(for: status)
-
-        if let image = NSImage(
-            systemSymbolName: descriptor.symbolName,
+        presenter.setIcon(
+            symbolName: descriptor.symbolName,
             accessibilityDescription: descriptor.accessibility
-        ) {
-            image.isTemplate = true
-            button.image = image
-            button.imageScaling = .scaleProportionallyDown
-        }
+        )
     }
 
     static func iconDescriptor(for status: SyncStatus) -> (symbolName: String, accessibility: String) {

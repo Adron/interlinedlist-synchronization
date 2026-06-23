@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import InterlinedSync
 
@@ -6,6 +7,7 @@ final class StatusItemControllerTests: XCTestCase {
     private var preferences: PreferencesManager!
     private var state: SyncState!
     private var coordinator: StubSyncCoordinator!
+    private var presenter: MockStatusItemPresenter!
     private var controller: StatusItemController!
 
     override func setUp() async throws {
@@ -14,7 +16,9 @@ final class StatusItemControllerTests: XCTestCase {
         preferences.syncEnabled = true
         state = SyncState()
         coordinator = StubSyncCoordinator()
+        presenter = MockStatusItemPresenter()
         controller = StatusItemController(
+            presenter: presenter,
             preferences: preferences,
             state: state,
             coordinator: coordinator
@@ -25,6 +29,10 @@ final class StatusItemControllerTests: XCTestCase {
         XCTAssertEqual(controller.statusMenuItem.title, "Status: Idle")
         XCTAssertEqual(controller.lastSyncedMenuItem.title, "Last synced: Never")
         XCTAssertEqual(controller.pauseResumeMenuItem.title, "Pause Sync")
+    }
+
+    func testMenuIsAttachedToPresenter() {
+        XCTAssertNotNil(presenter.attachedMenu)
     }
 
     func testRenderSyncingStatus() {
@@ -56,6 +64,12 @@ final class StatusItemControllerTests: XCTestCase {
         XCTAssertTrue(controller.lastSyncedMenuItem.title.hasPrefix("Last synced: "))
     }
 
+    func testRenderForwardsIconToPresenter() {
+        controller.render(status: .paused, lastSyncedAt: nil)
+
+        XCTAssertEqual(presenter.lastIcon?.symbolName, "pause.circle")
+    }
+
     func testStateChangeUpdatesMenuViaObservation() async {
         state.status = .syncing
         await pumpMainRunLoop()
@@ -79,29 +93,41 @@ final class StatusItemControllerTests: XCTestCase {
     }
 
     private func pumpMainRunLoop() async {
-        await Task.yield()
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        for _ in 0..<3 {
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 10_000_000)
+        }
     }
 }
 
-private final class StubSyncCoordinator: SyncCoordinating, @unchecked Sendable {
-    private let lock = NSLock()
+@MainActor
+private final class MockStatusItemPresenter: StatusItemPresenting {
+    private(set) var attachedMenu: NSMenu?
+    private(set) var lastIcon: (symbolName: String, accessibilityDescription: String)?
+
+    func attach(menu: NSMenu) {
+        attachedMenu = menu
+    }
+
+    func setIcon(symbolName: String, accessibilityDescription: String) {
+        lastIcon = (symbolName, accessibilityDescription)
+    }
+}
+
+private actor StubSyncCoordinator: SyncCoordinating {
     private(set) var syncNowCount = 0
     private(set) var pauseCount = 0
     private(set) var resumeCount = 0
 
     func syncNow() async {
-        lock.lock(); defer { lock.unlock() }
         syncNowCount += 1
     }
 
     func pause() async {
-        lock.lock(); defer { lock.unlock() }
         pauseCount += 1
     }
 
     func resume() async {
-        lock.lock(); defer { lock.unlock() }
         resumeCount += 1
     }
 }

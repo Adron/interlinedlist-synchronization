@@ -8,6 +8,8 @@ protocol UserNotificationScheduling: Sendable {
     func add(_ request: UNNotificationRequest) async throws
 }
 
+extension UNUserNotificationCenter: @retroactive @unchecked Sendable {}
+
 extension UNUserNotificationCenter: UserNotificationScheduling {
     func currentAuthorizationStatus() async -> UNAuthorizationStatus {
         await notificationSettings().authorizationStatus
