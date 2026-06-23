@@ -103,7 +103,7 @@ jobs:
 
       - name: Build .deb
         working-directory: linux-ubuntu
-        run: cargo deb
+        run: cargo deb -p interlinedlist-sync
 
       - name: Upload .deb artifact
         uses: actions/upload-artifact@v4
