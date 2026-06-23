@@ -17,7 +17,7 @@ tracing = { workspace = true }
 dirs = { workspace = true }
 async-trait = { workspace = true }
 
-secret-service = { version = "3", optional = true }
+secret-service = { version = "3", default-features = false, features = ["rt-tokio-crypto-rust"], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
