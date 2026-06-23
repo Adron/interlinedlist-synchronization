@@ -147,6 +147,78 @@ public sealed class InterlinedListClient : IInterlinedListClient
         return payload;
     }
 
+    public async Task<Document> CreateDocumentAsync(string title, string content, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(title);
+        content ??= string.Empty;
+
+        _logger.LogDebug("Creating document {Title}.", title);
+
+        var body = new DocumentMutation(title, content);
+        var response = await SendJsonAsync(HttpMethod.Post, DocumentsEndpoint, body, cancellationToken).ConfigureAwait(false);
+
+        return await ReadDocumentAsync(response, "create", cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<Document> UpdateDocumentAsync(string documentId, string title, string content, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(documentId);
+        ArgumentException.ThrowIfNullOrEmpty(title);
+        content ??= string.Empty;
+
+        var path = $"{DocumentsEndpoint}/{Uri.EscapeDataString(documentId)}";
+        _logger.LogDebug("Updating document {DocumentId}.", documentId);
+
+        var body = new DocumentMutation(title, content);
+        var response = await SendJsonAsync(HttpMethod.Put, path, body, cancellationToken).ConfigureAwait(false);
+
+        return await ReadDocumentAsync(response, "update", cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task DeleteDocumentAsync(string documentId, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(documentId);
+
+        var path = $"{DocumentsEndpoint}/{Uri.EscapeDataString(documentId)}";
+        _logger.LogDebug("Deleting document {DocumentId}.", documentId);
+
+        HttpResponseMessage response;
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Delete, path);
+            response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogError(ex, "Network failure deleting document {DocumentId}.", documentId);
+            throw new ApiException($"Could not reach the InterlinedList server to delete {documentId}.", null, ex);
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogError(ex, "Delete request for {DocumentId} timed out.", documentId);
+            throw new ApiException($"Delete request for {documentId} timed out.", null, ex);
+        }
+
+        try
+        {
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                _logger.LogInformation("Server returned 404 for delete of {DocumentId}; treating as success.", documentId);
+                return;
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("Delete {DocumentId} failed with status {Status}.", documentId, response.StatusCode);
+                throw new ApiException($"Delete {documentId} failed with status {(int)response.StatusCode}.", response.StatusCode);
+            }
+        }
+        finally
+        {
+            response.Dispose();
+        }
+    }
+
     private async Task<HttpResponseMessage> SendAsync(HttpMethod method, string path, CancellationToken cancellationToken)
     {
         HttpResponseMessage response;
@@ -176,4 +248,69 @@ public sealed class InterlinedListClient : IInterlinedListClient
 
         return response;
     }
+
+    private async Task<HttpResponseMessage> SendJsonAsync<TBody>(HttpMethod method, string path, TBody body, CancellationToken cancellationToken)
+    {
+        HttpResponseMessage response;
+        try
+        {
+            using var request = new HttpRequestMessage(method, path)
+            {
+                Content = JsonContent.Create(body, options: JsonOptions),
+            };
+            response = await _httpClient.SendAsync(request, cancellationToken).ConfigureAwait(false);
+        }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogError(ex, "Network failure calling {Method} {Path}.", method, path);
+            throw new ApiException($"Could not reach the InterlinedList server for {method} {path}.", null, ex);
+        }
+        catch (TaskCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogError(ex, "Request timed out calling {Method} {Path}.", method, path);
+            throw new ApiException($"Request timed out calling {method} {path}.", null, ex);
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var status = response.StatusCode;
+            _logger.LogWarning("{Method} {Path} failed with status {Status}.", method, path, status);
+            response.Dispose();
+            throw new ApiException($"{method} {path} failed with status {(int)status}.", status);
+        }
+
+        return response;
+    }
+
+    private async Task<Document> ReadDocumentAsync(HttpResponseMessage response, string operation, CancellationToken cancellationToken)
+    {
+        try
+        {
+            Document? payload;
+            try
+            {
+                payload = await response.Content
+                    .ReadFromJsonAsync<Document>(JsonOptions, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogError(ex, "{Operation} response was not valid JSON.", operation);
+                throw new ApiException($"{operation} response was not valid JSON.", response.StatusCode, ex);
+            }
+
+            if (payload is null)
+            {
+                throw new ApiException($"{operation} response was empty.", response.StatusCode);
+            }
+
+            return payload;
+        }
+        finally
+        {
+            response.Dispose();
+        }
+    }
+
+    private sealed record DocumentMutation(string Title, string Content);
 }

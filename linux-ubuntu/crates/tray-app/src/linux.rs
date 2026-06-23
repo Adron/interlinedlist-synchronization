@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use anyhow::Result;
@@ -46,6 +47,7 @@ struct InterlinedTray {
     status_rx: watch::Receiver<SyncStatus>,
     sync_now_tx: tokio::sync::mpsc::Sender<()>,
     paused: bool,
+    config_path: PathBuf,
 }
 
 impl Tray for InterlinedTray {
@@ -72,6 +74,7 @@ impl Tray for InterlinedTray {
 
         let paused = self.paused;
         let tx = self.sync_now_tx.clone();
+        let config_path = self.config_path.clone();
 
         vec![
             MenuItem::Standard(StandardItem {
@@ -100,9 +103,15 @@ impl Tray for InterlinedTray {
             }),
             MenuItem::Separator,
             MenuItem::Standard(StandardItem {
+                label: "Settings\u{2026}".to_string(),
+                activate: Box::new(move |_: &mut Self| {
+                    open_settings(config_path.clone());
+                }),
+                ..Default::default()
+            }),
+            MenuItem::Standard(StandardItem {
                 label: "Open Web App".to_string(),
                 activate: Box::new(|_: &mut Self| {
-                    // xdg-open is the freedesktop standard URL opener on Ubuntu.
                     let _ = std::process::Command::new("xdg-open")
                         .arg("https://interlinedlist.com")
                         .spawn();
@@ -121,22 +130,37 @@ impl Tray for InterlinedTray {
     }
 }
 
+/// Open the settings window.
+///
+/// When the `gtk` feature is active, the window runs in a dedicated thread
+/// that owns the GTK4 main loop.  When the feature is absent, clicking
+/// "Settings…" is a no-op (the menu item is still shown).
+fn open_settings(config_path: PathBuf) {
+    #[cfg(feature = "gtk")]
+    crate::settings::open_settings_window(config_path);
+
+    #[cfg(not(feature = "gtk"))]
+    {
+        let _ = config_path;
+        info!("settings dialog not available (compiled without 'gtk' feature)");
+    }
+}
+
 pub async fn run_tray_app(
     status_rx: watch::Receiver<SyncStatus>,
     sync_now_tx: tokio::sync::mpsc::Sender<()>,
+    config_path: PathBuf,
 ) -> Result<()> {
     info!("starting system tray");
 
-    // ksni spawns a background thread for the D-Bus StatusNotifierItem service.
-    // In ksni 0.2, spawn() returns () and runs until the process exits.
     let service = ksni::TrayService::new(InterlinedTray {
         status_rx,
         sync_now_tx,
         paused: false,
+        config_path,
     });
     service.spawn();
 
     tokio::signal::ctrl_c().await?;
-    // _handle drops here, which shuts down the tray service.
     Ok(())
 }

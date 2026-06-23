@@ -130,6 +130,7 @@ public static class Program
             new SyncStateRepository(dbPath, sp.GetRequiredService<ILogger<SyncStateRepository>>()));
 
         services.AddSingleton<IFileMapper, FileMapper>();
+        services.AddSingleton<IFileWatcher, FileSystemWatcherService>();
 
         services.AddTransient<BearerTokenHandler>();
         services.AddHttpClient<IInterlinedListClient, InterlinedListClient>()

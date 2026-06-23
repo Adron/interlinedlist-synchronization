@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
     init_tracing();
 
     let config_path = cli.config.unwrap_or_else(ConfigStore::default_path);
-    let config_store = ConfigStore::new(config_path);
+    let config_store = ConfigStore::new(config_path.clone());
     let config = config_store.load_or_default()?;
 
     // On Linux, prefer GNOME Keyring; fall back to file store if keyring init fails
@@ -154,7 +154,7 @@ async fn main() -> Result<()> {
                         error!("sync engine exited with error: {e}");
                     }
                 });
-                run_tray_app(status_rx, sync_now_tx).await?;
+                run_tray_app(status_rx, sync_now_tx, config_path.clone()).await?;
                 engine_task.abort();
                 Ok::<(), anyhow::Error>(())
             })

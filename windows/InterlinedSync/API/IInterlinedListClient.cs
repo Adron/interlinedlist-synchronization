@@ -31,4 +31,22 @@ public interface IInterlinedListClient
     /// engine when it needs to (re)download content.
     /// </summary>
     Task<Document> GetDocumentAsync(string documentId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates a new document on the server from a local file's title and body.
+    /// Returns the server-assigned id and updated timestamp.
+    /// </summary>
+    Task<Document> CreateDocumentAsync(string title, string content, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Updates an existing document's title and/or body. Returns the refreshed
+    /// server representation.
+    /// </summary>
+    Task<Document> UpdateDocumentAsync(string documentId, string title, string content, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Removes a document from the server. Treats <c>404</c> as success because
+    /// it means another client has already deleted the document.
+    /// </summary>
+    Task DeleteDocumentAsync(string documentId, CancellationToken cancellationToken = default);
 }

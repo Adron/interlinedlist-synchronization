@@ -37,6 +37,16 @@ final class SyncEngineTests: XCTestCase {
         SyncEngine(client: client, mapper: mapper, state: state, pollInterval: 999)
     }
 
+    private func makeEngine(notifications: NotificationManager) -> SyncEngine {
+        SyncEngine(
+            client: client,
+            mapper: mapper,
+            state: state,
+            notifications: notifications,
+            pollInterval: 999
+        )
+    }
+
     // MARK: - Pull
 
     func testPull_writesNewRemoteDocumentsToDisk() async throws {
@@ -151,6 +161,40 @@ final class SyncEngineTests: XCTestCase {
         let message = await state.errorMessage
         if case .error = status {} else { XCTFail("Expected .error, got \(status)") }
         XCTAssertNotNil(message)
+    }
+
+    // MARK: - Notifications
+
+    func testSyncNow_notifiesCompletionWhenDocumentsChanged() async throws {
+        server.seed(DocumentDTO(id: "r1", title: "New", body: "hello", updatedAt: date(1)))
+        let center = MockNotificationCenter()
+        let notifications = NotificationManager(center: center, isEnabled: { true })
+        let engine = makeEngine(notifications: notifications)
+
+        await engine.syncNow()
+
+        XCTAssertTrue(center.addedTitles.contains("Sync complete"))
+    }
+
+    func testSyncNow_doesNotNotifyWhenNothingChanged() async throws {
+        let center = MockNotificationCenter()
+        let notifications = NotificationManager(center: center, isEnabled: { true })
+        let engine = makeEngine(notifications: notifications)
+
+        await engine.syncNow()
+
+        XCTAssertTrue(center.added.isEmpty)
+    }
+
+    func testSyncNow_notifiesOnFailure() async throws {
+        server.failNextFetch = true
+        let center = MockNotificationCenter()
+        let notifications = NotificationManager(center: center, isEnabled: { true })
+        let engine = makeEngine(notifications: notifications)
+
+        await engine.syncNow()
+
+        XCTAssertTrue(center.addedTitles.contains("Sync failed"))
     }
 
     // MARK: - Helpers

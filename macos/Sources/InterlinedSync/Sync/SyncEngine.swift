@@ -9,6 +9,7 @@ actor SyncEngine {
     private let mapper: DocumentMapper
     private let resolver: ConflictResolving
     private let state: SyncState
+    private let notifications: NotificationManager?
     private let pollInterval: TimeInterval
 
     private var ledger: [String: SyncRecord] = [:]
@@ -22,12 +23,14 @@ actor SyncEngine {
         mapper: DocumentMapper,
         resolver: ConflictResolving = RemoteWinsConflictResolver(),
         state: SyncState,
+        notifications: NotificationManager? = nil,
         pollInterval: TimeInterval = 30
     ) {
         self.client = client
         self.mapper = mapper
         self.resolver = resolver
         self.state = state
+        self.notifications = notifications
         self.pollInterval = pollInterval
     }
 
@@ -67,6 +70,16 @@ actor SyncEngine {
         watcher = nil
     }
 
+    func pause() async {
+        stop()
+        await state.paused()
+    }
+
+    func resume() async {
+        await state.resumed()
+        start()
+    }
+
     // MARK: - One cycle
 
     func syncNow() async {
@@ -76,16 +89,22 @@ actor SyncEngine {
 
         await state.beginSync()
         do {
-            try await runCycle()
+            let outcome = try await runCycle()
             await state.finishSync(at: Date())
+            await reportSuccess(outcome)
         } catch let error as SyncError {
-            await state.fail(Self.describe(error))
+            let message = Self.describe(error)
+            await state.fail(message)
+            await notifications?.notifySyncFailed(message: message)
         } catch {
-            await state.fail(error.localizedDescription)
+            let message = error.localizedDescription
+            await state.fail(message)
+            await notifications?.notifySyncFailed(message: message)
         }
     }
 
-    func runCycle() async throws {
+    @discardableResult
+    func runCycle() async throws -> SyncOutcome {
         let remote = try await client.fetchDocuments()
         let (tracked, untracked) = try loadLocal()
 
@@ -101,6 +120,20 @@ actor SyncEngine {
         try await applyLocalChanges(changeSet.localChanges)
 
         rebuildLedger(remote: remote)
+
+        let documentsChanged = changeSet.localChanges.count
+            + changeSet.remoteChanges.count
+            + changeSet.conflicts.count
+        return SyncOutcome(
+            documentsChanged: documentsChanged,
+            conflictCopiesCreated: changeSet.conflicts.count
+        )
+    }
+
+    private func reportSuccess(_ outcome: SyncOutcome) async {
+        guard let notifications, outcome.hasChanges else { return }
+        await notifications.notifyConflictCopyCreated(count: outcome.conflictCopiesCreated)
+        await notifications.notifySyncCompleted(documentsChanged: outcome.documentsChanged)
     }
 
     // MARK: - Local enumeration

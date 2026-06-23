@@ -13,16 +13,16 @@ using Microsoft.Extensions.Options;
 namespace InterlinedSync.Sync;
 
 /// <summary>
-/// Pull-only sync engine. Runs as a background <see cref="IHostedService"/>:
-/// once on start, then every <see cref="SyncPreferences.PollIntervalSeconds"/>
-/// seconds, it asks the server for the document list and reconciles disk state
-/// against the SQLite-backed <see cref="ISyncStateRepository"/>.
+/// Bidirectional sync engine. Runs as a background <see cref="IHostedService"/>:
+/// a poll loop pulls server state on an interval, and a watcher loop pushes
+/// local file changes to the server. Pull and push are serialized through a
+/// single <see cref="SemaphoreSlim"/> so they never collide on the same record.
 /// </summary>
 /// <remarks>
-/// This class deliberately depends only on cross-platform abstractions —
-/// <see cref="IInterlinedListClient"/>, <see cref="ISyncStateRepository"/>,
-/// <see cref="IFileMapper"/>, <see cref="IFileSystem"/> — so it can be exercised
-/// in unit tests on macOS or Linux without ever touching WPF or Windows APIs.
+/// Cross-platform — depends only on <see cref="IInterlinedListClient"/>,
+/// <see cref="ISyncStateRepository"/>, <see cref="IFileMapper"/>,
+/// <see cref="IFileSystem"/>, and <see cref="IFileWatcher"/> — so it can be
+/// exercised in unit tests on macOS or Linux without WPF or Windows APIs.
 /// </remarks>
 public sealed class SyncEngine : BackgroundService
 {
@@ -31,8 +31,10 @@ public sealed class SyncEngine : BackgroundService
     private readonly IFileMapper _fileMapper;
     private readonly ISyncStateNotifier _notifier;
     private readonly IFileSystem _fileSystem;
+    private readonly IFileWatcher _fileWatcher;
     private readonly IOptionsMonitor<SyncPreferences> _preferences;
     private readonly ILogger<SyncEngine> _logger;
+    private readonly SemaphoreSlim _syncGate = new(1, 1);
 
     public SyncEngine(
         IInterlinedListClient client,
@@ -40,6 +42,7 @@ public sealed class SyncEngine : BackgroundService
         IFileMapper fileMapper,
         ISyncStateNotifier notifier,
         IFileSystem fileSystem,
+        IFileWatcher fileWatcher,
         IOptionsMonitor<SyncPreferences> preferences,
         ILogger<SyncEngine> logger)
     {
@@ -48,6 +51,7 @@ public sealed class SyncEngine : BackgroundService
         _fileMapper = fileMapper;
         _notifier = notifier;
         _fileSystem = fileSystem;
+        _fileWatcher = fileWatcher;
         _preferences = preferences;
         _logger = logger;
     }
@@ -65,44 +69,108 @@ public sealed class SyncEngine : BackgroundService
             return SyncCycleResult.ForSkipped("sync folder not configured");
         }
 
-        _notifier.SetState(SyncState.Syncing);
+        await _syncGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            _fileSystem.Directory.CreateDirectory(prefs.SyncFolder);
-            await _repository.InitializeAsync(cancellationToken).ConfigureAwait(false);
-
-            IReadOnlyList<Document> remoteDocuments;
+            _notifier.SetState(SyncState.Syncing);
             try
             {
-                remoteDocuments = await _client.GetDocumentsAsync(cancellationToken).ConfigureAwait(false);
+                _fileSystem.Directory.CreateDirectory(prefs.SyncFolder);
+                await _repository.InitializeAsync(cancellationToken).ConfigureAwait(false);
+
+                IReadOnlyList<Document> remoteDocuments;
+                try
+                {
+                    remoteDocuments = await _client.GetDocumentsAsync(cancellationToken).ConfigureAwait(false);
+                }
+                catch (ApiException ex)
+                {
+                    _logger.LogWarning(ex, "Pull failed: could not fetch document list.");
+                    _notifier.SetState(SyncState.Error);
+                    await _repository.AppendLogAsync("pull.error", ex.Message, cancellationToken).ConfigureAwait(false);
+                    return SyncCycleResult.ForFailure(ex.Message);
+                }
+
+                var result = await ReconcileAsync(prefs.SyncFolder, remoteDocuments, cancellationToken).ConfigureAwait(false);
+
+                _notifier.SetState(SyncState.Idle);
+                await _repository.AppendLogAsync(
+                    "pull.complete",
+                    $"downloaded={result.Downloaded}, updated={result.Updated}, deleted={result.Deleted}",
+                    cancellationToken).ConfigureAwait(false);
+                return result;
             }
-            catch (ApiException ex)
+            catch (OperationCanceledException)
             {
-                _logger.LogWarning(ex, "Pull failed: could not fetch document list.");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected error during pull cycle.");
                 _notifier.SetState(SyncState.Error);
                 await _repository.AppendLogAsync("pull.error", ex.Message, cancellationToken).ConfigureAwait(false);
                 return SyncCycleResult.ForFailure(ex.Message);
             }
-
-            var result = await ReconcileAsync(prefs.SyncFolder, remoteDocuments, cancellationToken).ConfigureAwait(false);
-
-            _notifier.SetState(SyncState.Idle);
-            await _repository.AppendLogAsync(
-                "pull.complete",
-                $"downloaded={result.Downloaded}, updated={result.Updated}, deleted={result.Deleted}",
-                cancellationToken).ConfigureAwait(false);
-            return result;
         }
-        catch (OperationCanceledException)
+        finally
         {
-            throw;
+            _syncGate.Release();
         }
-        catch (Exception ex)
+    }
+
+    /// <summary>
+    /// Pushes a single local change to the server. Exposed for unit tests; in
+    /// production this is called by <see cref="ExecuteAsync"/> as it drains the
+    /// watcher's channel.
+    /// </summary>
+    public async Task<PushResult> PushOnceAsync(LocalChange change, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(change);
+
+        await _syncGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            _logger.LogError(ex, "Unexpected error during pull cycle.");
-            _notifier.SetState(SyncState.Error);
-            await _repository.AppendLogAsync("pull.error", ex.Message, cancellationToken).ConfigureAwait(false);
-            return SyncCycleResult.ForFailure(ex.Message);
+            await _repository.InitializeAsync(cancellationToken).ConfigureAwait(false);
+
+            _notifier.SetState(SyncState.Syncing);
+            try
+            {
+                var result = change.Kind switch
+                {
+                    LocalChangeKind.Deleted => await PushDeleteAsync(change.Path, cancellationToken).ConfigureAwait(false),
+                    LocalChangeKind.Renamed => await PushRenameAsync(change, cancellationToken).ConfigureAwait(false),
+                    _ => await PushUpsertAsync(change.Path, cancellationToken).ConfigureAwait(false),
+                };
+
+                _notifier.SetState(SyncState.Idle);
+                await _repository.AppendLogAsync(
+                    "push." + result.Action,
+                    $"path={change.Path}",
+                    cancellationToken).ConfigureAwait(false);
+                return result;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (ApiException ex)
+            {
+                _logger.LogWarning(ex, "Push failed for {Path}.", change.Path);
+                _notifier.SetState(SyncState.Error);
+                await _repository.AppendLogAsync("push.error", ex.Message, cancellationToken).ConfigureAwait(false);
+                return PushResult.ForFailure(ex.Message);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unexpected error pushing {Path}.", change.Path);
+                _notifier.SetState(SyncState.Error);
+                await _repository.AppendLogAsync("push.error", ex.Message, cancellationToken).ConfigureAwait(false);
+                return PushResult.ForFailure(ex.Message);
+            }
+        }
+        finally
+        {
+            _syncGate.Release();
         }
     }
 
@@ -111,6 +179,30 @@ public sealed class SyncEngine : BackgroundService
     {
         _logger.LogInformation("SyncEngine started.");
 
+        var prefs = _preferences.CurrentValue;
+        if (!string.IsNullOrEmpty(prefs.SyncFolder))
+        {
+            try
+            {
+                await _fileWatcher.StartAsync(prefs.SyncFolder, stoppingToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "Could not start file watcher for {Folder}.", prefs.SyncFolder);
+            }
+        }
+
+        var pushTask = ConsumePushChannelAsync(stoppingToken);
+        var pullTask = RunPullLoopAsync(stoppingToken);
+
+        await Task.WhenAll(pushTask, pullTask).ConfigureAwait(false);
+
+        await _fileWatcher.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        _logger.LogInformation("SyncEngine stopped.");
+    }
+
+    private async Task RunPullLoopAsync(CancellationToken stoppingToken)
+    {
         while (!stoppingToken.IsCancellationRequested)
         {
             try
@@ -137,8 +229,31 @@ public sealed class SyncEngine : BackgroundService
                 break;
             }
         }
+    }
 
-        _logger.LogInformation("SyncEngine stopped.");
+    private async Task ConsumePushChannelAsync(CancellationToken stoppingToken)
+    {
+        try
+        {
+            await foreach (var change in _fileWatcher.Changes.ReadAllAsync(stoppingToken).ConfigureAwait(false))
+            {
+                try
+                {
+                    await PushOnceAsync(change, stoppingToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Unhandled exception escaped push for {Path}.", change.Path);
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
     }
 
     private TimeSpan GetPollInterval()
@@ -177,7 +292,6 @@ public sealed class SyncEngine : BackgroundService
 
             if (doc.UpdatedAt > record.ServerUpdatedAt || !_fileSystem.File.Exists(record.LocalPath))
             {
-                // Title may have changed — delete the old file before writing the new one.
                 if (!string.Equals(record.LocalPath, targetPath, StringComparison.OrdinalIgnoreCase)
                     && _fileSystem.File.Exists(record.LocalPath))
                 {
@@ -242,6 +356,90 @@ public sealed class SyncEngine : BackgroundService
         await _repository.UpsertDocumentAsync(record, cancellationToken).ConfigureAwait(false);
     }
 
+    private async Task<PushResult> PushUpsertAsync(string path, CancellationToken cancellationToken)
+    {
+        if (!_fileSystem.File.Exists(path))
+        {
+            _logger.LogDebug("Push upsert skipped: {Path} no longer exists.", path);
+            return PushResult.ForSkipped("file disappeared");
+        }
+
+        var bytes = await _fileSystem.File.ReadAllBytesAsync(path, cancellationToken).ConfigureAwait(false);
+        var content = Encoding.UTF8.GetString(bytes);
+        var sha = ComputeSha256(bytes);
+        var title = ExtractTitle(path);
+
+        var existing = await _repository.GetByPathAsync(path, cancellationToken).ConfigureAwait(false);
+
+        if (existing is null)
+        {
+            var created = await _client.CreateDocumentAsync(title, content, cancellationToken).ConfigureAwait(false);
+            var localModified = _fileSystem.File.GetLastWriteTimeUtc(path);
+            var record = new SyncStateRecord(
+                Id: created.Id,
+                LocalPath: path,
+                ServerUpdatedAt: created.UpdatedAt,
+                LocalModifiedAt: new DateTimeOffset(localModified, TimeSpan.Zero),
+                Sha256: sha);
+            await _repository.UpsertDocumentAsync(record, cancellationToken).ConfigureAwait(false);
+            return PushResult.ForCreated(created.Id);
+        }
+
+        if (string.Equals(existing.Sha256, sha, StringComparison.Ordinal))
+        {
+            _logger.LogDebug("Push upsert no-op for {Path}: content unchanged.", path);
+            return PushResult.ForSkipped("hash unchanged");
+        }
+
+        var updated = await _client.UpdateDocumentAsync(existing.Id, title, content, cancellationToken).ConfigureAwait(false);
+        var localModifiedAt = _fileSystem.File.GetLastWriteTimeUtc(path);
+        var refreshed = existing with
+        {
+            ServerUpdatedAt = updated.UpdatedAt,
+            LocalModifiedAt = new DateTimeOffset(localModifiedAt, TimeSpan.Zero),
+            Sha256 = sha,
+        };
+        await _repository.UpsertDocumentAsync(refreshed, cancellationToken).ConfigureAwait(false);
+        return PushResult.ForUpdated(existing.Id);
+    }
+
+    private async Task<PushResult> PushDeleteAsync(string path, CancellationToken cancellationToken)
+    {
+        var record = await _repository.GetByPathAsync(path, cancellationToken).ConfigureAwait(false);
+        if (record is null)
+        {
+            _logger.LogDebug("Push delete skipped: {Path} was not tracked.", path);
+            return PushResult.ForSkipped("not tracked");
+        }
+
+        await _client.DeleteDocumentAsync(record.Id, cancellationToken).ConfigureAwait(false);
+        await _repository.DeleteByIdAsync(record.Id, cancellationToken).ConfigureAwait(false);
+        return PushResult.ForDeleted(record.Id);
+    }
+
+    private async Task<PushResult> PushRenameAsync(LocalChange change, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrEmpty(change.OldPath))
+        {
+            return await PushUpsertAsync(change.Path, cancellationToken).ConfigureAwait(false);
+        }
+
+        var oldRecord = await _repository.GetByPathAsync(change.OldPath, cancellationToken).ConfigureAwait(false);
+        if (oldRecord is not null)
+        {
+            await _client.DeleteDocumentAsync(oldRecord.Id, cancellationToken).ConfigureAwait(false);
+            await _repository.DeleteByIdAsync(oldRecord.Id, cancellationToken).ConfigureAwait(false);
+        }
+
+        return await PushUpsertAsync(change.Path, cancellationToken).ConfigureAwait(false);
+    }
+
+    private static string ExtractTitle(string path)
+    {
+        var name = Path.GetFileNameWithoutExtension(path);
+        return string.IsNullOrEmpty(name) ? "untitled" : name;
+    }
+
     private void TryDelete(string path)
     {
         try
@@ -273,4 +471,16 @@ public sealed record SyncCycleResult(int Downloaded, int Updated, int Deleted, b
 {
     public static SyncCycleResult ForSkipped(string reason) => new(0, 0, 0, true, reason);
     public static SyncCycleResult ForFailure(string error) => new(0, 0, 0, false, error);
+}
+
+/// <summary>
+/// Outcome of pushing a single <see cref="LocalChange"/> to the server.
+/// </summary>
+public sealed record PushResult(string Action, string? DocumentId, bool Skipped, string? Error)
+{
+    public static PushResult ForCreated(string id) => new("created", id, false, null);
+    public static PushResult ForUpdated(string id) => new("updated", id, false, null);
+    public static PushResult ForDeleted(string id) => new("deleted", id, false, null);
+    public static PushResult ForSkipped(string reason) => new("skipped", null, true, reason);
+    public static PushResult ForFailure(string error) => new("error", null, false, error);
 }

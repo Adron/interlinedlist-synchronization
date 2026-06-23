@@ -576,11 +576,77 @@ mod tests {
         let (_, rx) = mpsc::channel(8);
         let engine = make_engine(make_config(dir.path()), api, state.clone(), rx);
 
-        // The upload will fail with a server error and should record a pending op.
         let result = engine.upload_if_changed(&md_file).await;
         assert!(result.is_err());
 
         let record = state.lookup(&md_file).unwrap();
         assert_eq!(record.pending_op, PendingOp::Upload);
+    }
+
+    /// Verify that sending on `sync_now_tx` causes `SyncEngine::run()` to
+    /// execute a remote poll cycle. We seed the mock API with one document and
+    /// assert it arrives on disk after the manual-sync signal fires.
+    ///
+    /// `StateStore` contains a `RefCell` and is `!Sync`, so the engine must run
+    /// on a `LocalSet` — matching the daemon's `LocalSet` usage in `main.rs`.
+    #[tokio::test(flavor = "current_thread")]
+    async fn sync_now_triggers_remote_poll() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let dir = TempDir::new().unwrap();
+                let watch_dir = dir.path().to_path_buf();
+
+                let api = Arc::new(MockApiClient::new());
+                let state = make_state(&dir);
+                let (_file_tx, file_rx) = mpsc::channel(8);
+                let engine =
+                    make_engine(make_config(&watch_dir), api.clone(), state.clone(), file_rx);
+
+                // Seed a remote document before the engine starts.
+                api.create_document(
+                    "test@example.com",
+                    api_client::CreateDocumentRequest {
+                        title: "remote-note".to_string(),
+                        content: "# From Server".to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+
+                let (sync_now_tx, sync_now_rx) = mpsc::channel::<()>(4);
+                let status_rx = engine.status_receiver();
+
+                let engine_handle = tokio::task::spawn_local(async move {
+                    let _ = engine.run(sync_now_rx).await;
+                });
+
+                sync_now_tx.send(()).await.unwrap();
+
+                // Wait until the engine transitions through Syncing back to Idle.
+                let mut rx = status_rx;
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        rx.changed().await.unwrap();
+                        if *rx.borrow() == SyncStatus::Idle {
+                            break;
+                        }
+                    }
+                })
+                .await
+                .expect("engine did not reach Idle within 5 s");
+
+                engine_handle.abort();
+
+                let expected = watch_dir.join("remote-note.md");
+                assert!(
+                    expected.exists(),
+                    "expected synced file at {}",
+                    expected.display()
+                );
+                let content = std::fs::read_to_string(&expected).unwrap();
+                assert_eq!(content, "# From Server");
+            })
+            .await;
     }
 }

@@ -3,15 +3,30 @@ name = "tray-app"
 version = "0.1.0"
 edition = "2021"
 
-# ksni only builds on Linux. On other hosts, the crate compiles to stubs
-# so `cargo check --workspace` passes on macOS dev machines.
-# GTK4/libadwaita are reserved for the M4 settings dialog.
+# ksni and GTK4/libadwaita only build on Linux. On other hosts, the crate
+# compiles to stubs so `cargo check --workspace` passes on macOS dev machines.
+# Enable the GTK4/libadwaita settings dialog. Requires libgtk-4-dev and
+# libadwaita-1-dev to be installed on the build host. On Ubuntu 22.04 (Jammy),
+# libadwaita may require `ppa:gnome-team/gnome-next` since the packaged version
+# (1.0.x) does not include PreferencesWindow; install 1.2+ from the PPA.
+[features]
+default = []
+gtk = ["dep:gtk4", "dep:libadwaita"]
+
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = "0.2"
 image = { version = "0.25", default-features = false, features = ["png"] }
+# GTK4 + libadwaita for the Settings dialog. Optional so the workspace still
+# compiles without GTK dev headers (CI, macOS dev machines).
+gtk4 = { version = "0.9", optional = true }
+libadwaita = { version = "0.7", optional = true }
 
 [dependencies]
 sync-engine = { path = "../sync-engine" }
+config-store = { path = "../config-store" }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -2,7 +2,32 @@
 
 ## Current State
 
-Phase 2 (API Client + Document Fetch) is complete. `swift test` passes: 29/29.
+Phase 4 (Menu Bar UI + Notifications) is complete. `swift test` passes: 70/70.
+
+### What Phase 4 added
+
+- `Sync/SyncState.swift` — added `SyncOutcome` value type and a `resumed()` transition
+- `Sync/SyncEngine.swift` — `runCycle()` now returns a `SyncOutcome`; `syncNow()` reports
+  success/failure to an injected `NotificationManager`; added `pause()` / `resume()`
+- `Notifications/UserNotificationScheduling.swift` — protocol seam over `UNUserNotificationCenter`
+- `Notifications/NotificationManager.swift` — actor; just-in-time authorization (HIG),
+  gated by `PreferencesManager.notificationsEnabled`; posts completion (only when files
+  changed), error, and conflict-copy notifications
+- `MenuBar/SyncCoordinating.swift` — control-surface protocol the menu drives (`SyncEngine` conforms)
+- `MenuBar/StatusItemController.swift` — observes live `SyncState` via Combine; menu reflects
+  status, relative `lastSyncedAt` (`RelativeDateTimeFormatter`), Sync Now, Pause/Resume; template
+  SF Symbol icon badges per status
+- `Storage/PreferencesManager.swift` — added `notificationsEnabled` (default `true`)
+- `App/AppDelegate.swift` — wires `SyncState`, `NotificationManager`, `SyncEngine`, and
+  `StatusItemController` together; starts/pauses sync based on onboarding + preferences
+- Tests: `NotificationManagerTests` (10), `StatusItemControllerTests` (8),
+  `SyncEngineTests` notification cases (3), `MockNotificationCenter`
+
+### Earlier state
+
+Phase 2 (API Client + Document Fetch) was complete at 29/29; Phase 3 (file watching +
+bidirectional sync) landed the `SyncEngine` actor, `ChangeSet`, `ConflictResolver`,
+`FSEventsWatcher`, and their tests.
 
 ### What exists
 
@@ -36,30 +61,34 @@ Phase 2 (API Client + Document Fetch) is complete. `swift test` passes: 29/29.
 
 ## Next Phase to Implement
 
-### Phase 3 — Local File Watching + Upload
+### Phase 5 — Preferences + Login Item
 
-Files to implement (currently stubs):
+Files to implement (currently stubs / partial):
 
-1. **`FileSystem/FSEventsWatcher.swift`** — wrap `FSEventStreamCreate`; emit
-   `AsyncStream<[URL]>` of changed paths; handle start/stop lifecycle.
-2. **`Sync/ChangeSet.swift`** — populate from diffing `DocumentMapper.localDocuments()`
-   against the remote list returned by `InterlinedListClient.fetchDocuments()`.
-3. **`Sync/SyncEngine.swift`** — actor driving the full poll/push cycle:
-   - Pull: fetch remote docs → compute `ChangeSet.remoteChanges` → write via `DocumentMapper`
-   - Push: consume `FSEventsWatcher` events → compute `ChangeSet.localChanges` →
-     upload/delete via `InterlinedListClient`
-   - Conflict detection via `ConflictResolver`
-4. **`Sync/SyncState.swift`** — drive `status` and `lastSyncedAt` from `SyncEngine` results
-5. **Tests** — `SyncEngineTests`, `FSEventsWatcherTests` (or integration test with a temp directory)
+1. **`UI/PreferencesView.swift`** — full settings form bound to `PreferencesManager`:
+   - Sync folder (re-open `NSOpenPanel` via `selectSyncFolder()`), shown as a path
+   - Sync interval (minutes; drives `pollIntervalSeconds`)
+   - Launch at login toggle (see below)
+   - **Notifications toggle** — bind to the new `PreferencesManager.notificationsEnabled`
+     (added in Phase 4 but not yet surfaced in the UI)
+2. **`Storage/LaunchAgentManager.swift`** — wrap `SMAppService.mainApp` (macOS 13+) for a
+   one-line register/unregister Login Item; reflect `status` in the toggle
+3. **Wire-up** — changing the interval should reach the running `SyncEngine`. Phase 4 reads
+   `pollIntervalSeconds` once at construction; either rebuild the engine on change or add an
+   engine method to update its poll cadence live.
+4. **Tests** — `PreferencesManagerTests` (interval flooring, notifications default),
+   `LaunchAgentManagerTests` (mock `SMAppService` behind a protocol seam)
 
-### Phase 4 — Menu Bar UI + Notifications (after Phase 3)
+### Phases 6–7 (in order)
 
-- `StatusItemController` — connect to live `SyncState` (currently hardcoded)
-- `SyncState.@Published` properties driving menu item labels and icon badge
-- `UNUserNotificationCenter` for sync completion and error events
+1. `ConflictResolver` — user-selectable strategy (remote-wins is the current default) +
+   retry/backoff for transient network failures; comprehensive `SyncError` mapping
+2. Code signing, entitlements, `PrivacyInfo.xcprivacy`, notarization pipeline
 
-### Phases 5–7 (in order)
+### Carried-over API assumptions to verify before shipping
 
-1. `PreferencesView` + `SMAppService` login item
-2. `ConflictResolver` — chosen default strategy + retry/backoff
-3. Code signing, entitlements, notarization pipeline
+- List endpoint shape: assumed `{"documents": [...]}`; verify against live API
+- Field names: assumed camelCase (`updatedAt` etc.); if snake_case, uncomment
+  `keyDecodingStrategy = .convertFromSnakeCase` in `JSONDecoder.interlinedList()`
+- Endpoint paths: `GET /api/documents`, `POST /api/documents`, `PUT /api/documents/{id}`,
+  `DELETE /api/documents/{id}` — confirm these are correct

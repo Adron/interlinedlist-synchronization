@@ -158,10 +158,15 @@ windows/
 - [ ] `FileMapper`: bidirectional map of `local path ↔ server document ID`; persisted in SQLite
 - [ ] Tray icon state: idle → syncing → idle; error icon on API failure
 
-### Phase 4 — Sync Engine (Push)
-- [ ] `FileWatcher`: `FileSystemWatcher` on `SyncFolder`; debounces rapid events with a 500 ms timer; pushes `FileChangeEvent` onto `Channel<FileChangeEvent>`
-- [ ] `UploadQueue`: `IHostedService` consumer of the channel; calls `InterlinedListClient.UploadDocumentAsync()`; handles create vs update via `FileMapper` lookup
-- [ ] Deletion detection: marks local-only documents as deleted; calls `DELETE /api/documents/{id}`
+### Phase 4 — Sync Engine (Push) — **Complete**
+- [x] `IFileWatcher` + `FileSystemWatcherService`: `FileSystemWatcher` filtered on `*.md`, 500 ms debounce backed by an injectable `TimeProvider`, surfaces `LocalChange` records via `Channel<LocalChange>`
+- [x] `SyncEngine.PushOnceAsync`: consumes the watcher channel inside `ExecuteAsync`; routes Created/Modified to `POST` (new) or `PUT` (known); skips when the SHA-256 hash is unchanged
+- [x] `SyncEngine.PushDeleteAsync`: maps local path to document id via the repository, calls `DELETE /api/documents/{id}`, removes the local record
+- [x] Renames: treated as delete-old + create-new; `LocalChangeKind.Renamed` events carry both paths
+- [x] Push/pull serialization: `SemaphoreSlim(1,1)` shared between `RunOnceAsync` and `PushOnceAsync` so the two pipelines never collide on the same record
+- [x] `IInterlinedListClient` extended with `CreateDocumentAsync`, `UpdateDocumentAsync`, `DeleteDocumentAsync` (404 on delete treated as success)
+- [x] DI wiring in `Program.cs` registers `IFileWatcher -> FileSystemWatcherService` as a singleton; the sync engine starts the watcher on the configured sync folder
+- [x] Tests: `FileSystemWatcherServiceTests` (6) cover debounce, filter, and event kinds against a real temp directory; `SyncEngineTests` push scenarios (7) cover create / update / hash-unchanged / delete / rename / error using `MockHttpMessageHandler` + `StubFileWatcher`
 
 ### Phase 5 — Conflict Resolution
 - [ ] Detect conflict: document modified locally since last sync AND modified on server since last sync

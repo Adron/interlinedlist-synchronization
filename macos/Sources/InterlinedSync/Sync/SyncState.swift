@@ -16,6 +16,18 @@ enum SyncStatus: Equatable, Sendable {
     case error(String)
 }
 
+/// The result of one completed sync cycle, used to drive just-in-time notifications.
+struct SyncOutcome: Sendable, Equatable {
+    var documentsChanged: Int
+    var conflictCopiesCreated: Int
+
+    static let unchanged = SyncOutcome(documentsChanged: 0, conflictCopiesCreated: 0)
+
+    var hasChanges: Bool {
+        documentsChanged > 0 || conflictCopiesCreated > 0
+    }
+}
+
 @MainActor
 final class SyncState: ObservableObject {
     @Published var status: SyncStatus = .idle
@@ -40,5 +52,11 @@ final class SyncState: ObservableObject {
 
     func paused() {
         status = .paused
+    }
+
+    func resumed() {
+        if case .paused = status {
+            status = .idle
+        }
     }
 }

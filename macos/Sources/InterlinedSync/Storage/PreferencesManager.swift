@@ -6,6 +6,7 @@ final class PreferencesManager: ObservableObject {
     @AppStorage("syncFolderPath") var syncFolderPath: String = ""
     @AppStorage("syncIntervalMinutes") var syncIntervalMinutes: Int = 5
     @AppStorage("syncEnabled") var syncEnabled: Bool = true
+    @AppStorage("notificationsEnabled") var notificationsEnabled: Bool = true
     @AppStorage("hasCompletedOnboarding") var hasCompletedOnboarding: Bool = false
 
     private static let bookmarkKey = "syncFolderBookmark"
