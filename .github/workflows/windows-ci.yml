@@ -46,6 +46,10 @@ jobs:
 
       - name: Run integration tests
         working-directory: windows
+        env:
+          INTERLINEDLIST_EMAIL: ${{ secrets.INTERLINEDLIST_EMAIL }}
+          INTERLINEDLIST_PASSWORD: ${{ secrets.INTERLINEDLIST_PASSWORD }}
+          INTERLINEDLIST_API_BASE_URL: ${{ secrets.INTERLINEDLIST_API_BASE_URL }}
         run: >
           dotnet test InterlinedSync.IntegrationTests/InterlinedSync.IntegrationTests.csproj
           --configuration Release

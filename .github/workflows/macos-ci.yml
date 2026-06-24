@@ -36,6 +36,10 @@ jobs:
 
       - name: Run tests
         working-directory: macos
+        env:
+          INTERLINEDLIST_EMAIL: ${{ secrets.INTERLINEDLIST_EMAIL }}
+          INTERLINEDLIST_PASSWORD: ${{ secrets.INTERLINEDLIST_PASSWORD }}
+          INTERLINEDLIST_API_BASE_URL: ${{ secrets.INTERLINEDLIST_API_BASE_URL }}
         run: swift test --parallel
 
       - name: Upload build artifacts
