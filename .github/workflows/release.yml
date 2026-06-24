@@ -266,7 +266,6 @@ jobs:
           | macOS 13 Ventura or later | \`InterlinedSync-macOS-${TAG}.zip\` | Unzip and move to \`/Applications\`. Unsigned — right-click → Open to bypass Gatekeeper on first launch. |
           | Windows 10 / 11 (x64) | \`InterlinedSync-Windows-${TAG}.zip\` | Unzip and run \`InterlinedSync.exe\`. Requires [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0). |
           | Ubuntu / Debian (amd64) | \`interlinedlist-sync_*.deb\` | \`sudo dpkg -i interlinedlist-sync_*.deb\` |
-          | Ubuntu Snap (amd64) | \`interlinedlist-sync_*.snap\` | \`sudo snap install --classic --dangerous interlinedlist-sync_*.snap\` (unsigned local install; use the Snap Store once published) |
           | Linux standalone binary | \`InterlinedSync-Linux-${TAG}.tar.gz\` | Extract and place \`interlinedlist-sync\` in your \`\$PATH\`. |
 
           ### First-time setup
