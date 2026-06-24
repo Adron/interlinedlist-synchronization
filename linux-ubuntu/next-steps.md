@@ -2,49 +2,54 @@
 
 ## Current State (as of 2026-06-22)
 
-The Cargo workspace and all crates are implemented through **M1 + M2 + M3 + M4 (partial)**.
+The Cargo workspace and all crates are implemented through **M1 + M2 + M3 + M4 (complete) + M5 (complete)**.
 
 ### What is complete
 
 | Crate | Status |
 |---|---|
-| `config-store` | Config TOML read/write with validation, defaults, and round-trip tests |
-| `state-store` | SQLite schema + CRUD (insert, lookup by path, lookup by server ID, upsert, delete, set pending op) |
-| `api-client` | Async HTTP — `login()`, `list_documents()`, `get_document()`, `create_document()`, `update_document()`, `delete_document()`, retry with exponential backoff; mockito-based integration tests |
+| `config-store` | Config TOML read/write with validation, defaults, round-trip tests; `ConflictResolution::LocalWins` variant added |
+| `state-store` | SQLite schema + CRUD; `pending_ops` table with `enqueue_op` / `peek_pending_ops` / `mark_op_done` / `mark_op_failed` |
+| `api-client` | Async HTTP — login, list/get/create/update/delete document, delta, retry with exponential backoff; mock + integration tests |
 | `api-client/mock` | `MockApiClient` for unit tests (in-memory store + `fail_once` injection) |
 | `file-watcher` | inotify via `notify` crate, 500ms debounce, recursive watch, emits `FileChanged/Created/Deleted` |
-| `sync-engine` | Full sync cycle: upload on FileChanged, hash dedup, periodic remote poll, conflict resolution (remote-wins + conflict-copy), pending op on failure, atomic write; `sync_now_rx` wired into `run()` loop |
-| `secret-store` | `SecretStore` trait + `FileSecretStore` (token in `~/.config/…/.token-<account>`, 0600 perms) + `KeyringSecretStore` (GNOME Keyring via `secret-service` crate, D-Bus, with in-memory mock tests + `#[ignore]`'d real-keyring round-trip) |
-| `notifier` | `Notifier` trait + `StubNotifier` + `LibnotifyNotifier` (notify-rust, libnotify backend, spawn_blocking) |
-| `tray-app` | `ksni`-based StatusNotifierItem tray (X11 + Wayland); menu: Status / Sync Now / Pause / Settings… / Open Web App / Quit; Settings menu item wires to `open_settings_window` |
-| `tray-app` (M4) | Settings dialog: Adwaita `PreferencesWindow` with Watched Folders, Sync, Notifications, Account panels; gated behind `--features gtk`; GTK4 runs in a dedicated thread with GLib main loop |
-| `interlinedlist-sync` (bin) | `--login` / `--daemon` / headless modes; `sync_now_rx` plumbed from tray to engine; Linux: `LibnotifyNotifier` + `KeyringSecretStore` (with file store fallback); `config_path` forwarded to tray for settings dialog |
+| `sync-engine` | Full sync cycle: upload on FileChanged, hash dedup, periodic remote poll, conflict resolution (remote-wins, conflict-copy, **local-wins**); offline queue drain on startup / poll cycle / network reconnect; `SyncEngine::with_network_monitor` constructor |
+| `sync-engine` (M5) | `NetworkMonitor` trait + `StubNetworkMonitor` (testable via `Arc<Notify>`); `NetworkManagerMonitor` (Linux D-Bus, `#[cfg(target_os="linux", feature="network-monitor")]`) |
+| `secret-store` | `SecretStore` trait + `FileSecretStore` + `KeyringSecretStore` (GNOME Keyring via `secret-service`, D-Bus) |
+| `notifier` | `Notifier` trait + `StubNotifier` + `LibnotifyNotifier` (notify-rust, libnotify backend) |
+| `tray-app` | `ksni`-based StatusNotifierItem tray; Settings dialog refactored to window-level Apply/Revert; folder picker result persisted on Apply/close; `LocalWins` radio button added |
+| `interlinedlist-sync` (bin) | `--login` / `--daemon` / headless modes; `sync_now_rx` plumbed from tray to engine; `config_path` forwarded to tray for settings dialog |
 | Packaging | systemd user unit, AppArmor profile (starter), `.desktop` autostart entry, sysctl drop-in |
-| Unit tests | `sync-engine`: upload on change, no-op on hash match, conflict copy, remote-wins, pending op on failure, **`sync_now` channel triggers remote poll**; `secret-store`: in-memory mock store CRUD + ignored keyring round-trip; `tray-app`: settings config round-trip |
+| Unit tests | 59 unit tests across all crates; 5 live-API integration tests |
+
+### M4 — Completed items
+
+1. **Folder picker persistence** — `build_folders_page` returns a collector closure; `window.connect_close_request` and the Apply button both call all four collectors and write config atomically once.
+2. **`LocalWins` conflict resolution** — added to `ConflictResolution` enum, handler arm in `write_document_atomic` returns early (keeps local file), radio button in settings Sync panel, round-trip serialisation test.
+3. **Single Apply/Revert at window level** — per-panel Save rows removed; `do_save` closure shared between Apply button and `connect_close_request`; Revert closes window and reopens with disk config.
+
+### M5 — Completed items
+
+1. **`pending_ops` table** — added to `StateStore::migrate()`; `OpKind` enum (`Upload/Delete/Rename`), `QueuedOp` struct, `enqueue_op` / `peek_pending_ops` / `mark_op_done` / `mark_op_failed` methods.
+2. **`SyncEngine` integration** — `drain_queue()` called on startup, on every poll tick, and on manual sync; `upload_if_changed` failure path calls `enqueue_op` in addition to `set_pending_op`.
+3. **`NetworkMonitor` trait** — `pub trait NetworkMonitor: Send + Sync { async fn wait_for_reconnect(&self); }`; `StubNetworkMonitor` (testable, `Arc<Notify>`); `NetworkManagerMonitor` stub behind `#[cfg(target_os="linux", feature="network-monitor")]` in `crates/sync-engine/src/nm_monitor.rs`; `select!` arm in `run()` triggers `drain_queue()` on reconnect.
 
 ### What is missing / TODOs in code
 
-1. **`cargo check` requires Linux host** — inotify, ksni, and (with `--features gtk`) GTK4/libadwaita dev headers are Linux-only. Run on Ubuntu 22.04/24.04 or Docker. On macOS dev machines the workspace compiles to stubs without those features.
+1. **`cargo check` requires Linux host** — inotify, ksni, and (with `--features gtk`) GTK4/libadwaita dev headers are Linux-only. Run on Ubuntu 22.04/24.04 or Docker.
 
-2. **M4 — Settings dialog save wiring is partial** — the Sync and Notifications pages have a "Save" row that writes back to `ConfigStore`. The Watched Folders and Account pages currently only display values; path picker result is shown in the UI but not persisted on close. Wire up a window `close-request` handler that collects all field values and saves the config atomically.
+2. **`NetworkManagerMonitor` zbus signal stream** — `nm_monitor.rs` uses `receive_state_changed()` / `stream.next()` which requires `zbus` and `futures` in scope. Wire in `zbus` as an optional workspace dep when the `network-monitor` feature is active; confirm the exact signal proxy macro syntax under zbus 4.x vs 5.x. The D-Bus path for the `StateChanged` signal is `/org/freedesktop/NetworkManager` with interface `org.freedesktop.NetworkManager`.
 
-3. **M4 — Settings dialog: `SwitchRow` save** — `SwitchRow` toggling is shown but not saved on panel switch. A "Save" button is provided per panel; consider switching to a single "Apply" / "Revert" pattern at the window level for consistency.
+3. **M4 — `libadwaita` version on Ubuntu 22.04** — libadwaita 1.0.x in Jammy does not have `PreferencesWindow`, `SpinRow`, or `SwitchRow`. The PPA requirement (`ppa:gnome-team/gnome-next`) must be documented in the `.deb` README and `postinst`.
 
-4. **M4 — `libadwaita` version on Ubuntu 22.04** — libadwaita 1.0.x in Jammy does not have `PreferencesWindow`, `SpinRow`, or `SwitchRow`. Document the PPA requirement (`ppa:gnome-team/gnome-next`) prominently in the `.deb` README and `postinst`. Consider a `PreferencesPage`-free fallback for 22.04 minimal installs if PPA adoption is low.
-
-5. **M5 — Offline queue** — `queue.db` path is defined but the queue table is not created and `SyncEngine::run()` does not drain it. Needs:
-   - `StateStore` or separate `QueueStore` with insert/drain operations
-   - NetworkManager D-Bus subscription via `zbus` to trigger drain on reconnect
-
-6. **M6 — `.deb` packaging** — `packaging/` files exist and `[package.metadata.deb]` is in `Cargo.toml`. Still needed:
+4. **M6 — `.deb` packaging** — `packaging/` files exist and `[package.metadata.deb]` is in `Cargo.toml`. Still needed:
    - `maintainer-scripts/postinst` to install sysctl drop-in (`sysctl --system`) and AppArmor profile (`apparmor_parser`)
    - `maintainer-scripts/prerm` to stop the user service
    - Verify `lintian` passes on a built `.deb`
 
-7. **M7 — Snap** — `snapcraft.yaml` not started.
+5. **M7 — Snap** — `snapcraft.yaml` not started.
 
-8. **Test coverage gaps**:
-   - `state-store`: unit tests for all CRUD operations (insert, lookup, upsert, delete, set_pending_op)
+6. **Test coverage gaps**:
    - `file-watcher`: event emission test using `tempfile` + `tokio` (Linux-only, `#[ignore]` on macOS)
    - `tray-app` (settings): `#[ignore]`'d smoke test that opens the window on a Linux display
 
@@ -62,7 +67,7 @@ sudo apt install libgtk-4-dev libadwaita-1-dev  # or use PPA for 22.04
 cargo check --workspace --features tray-app/gtk
 
 # Run all cross-platform tests:
-cargo test --workspace
+cargo test --workspace --exclude tray-app
 
 # Build release binary:
 cargo build --release
@@ -74,12 +79,10 @@ lintian target/debian/*.deb
 
 ### Next tasks in order
 
-1. Finish settings dialog save wiring — window `close-request` → collect all fields → save config
-2. Add state-store unit tests
-3. Add file-watcher event emission test (Linux-only / `#[ignore]`)
-4. Implement offline queue + NetworkManager D-Bus drain (M5)
-5. Write `postinst`/`prerm` maintainer scripts and verify `lintian` (M6)
-6. Write `snapcraft.yaml` (M7)
+1. Wire `zbus` optional dep for `network-monitor` feature; verify `NetworkManagerMonitor` compiles on Ubuntu 22.04 with zbus 4.x
+2. Write `postinst`/`prerm` maintainer scripts and verify `lintian` (M6)
+3. Write `snapcraft.yaml` (M7)
+4. Add file-watcher event emission test (Linux-only / `#[ignore]`)
 
 ---
 
@@ -89,3 +92,4 @@ lintian target/debian/*.deb
 2. **Document API shape** — does `GET /documents` return `sha256` in the summary? If not, remote-poll conflict detection falls back to timestamp comparison only.
 3. **Wayland tray** — `ksni` (StatusNotifierItem) works on GNOME Wayland with the AppIndicator extension enabled. Confirm this is acceptable.
 4. **Ubuntu 22.04 libadwaita** — PPA requirement for `PreferencesWindow`. Decide: ship PPA instruction in postinst, or gate the settings dialog behind a runtime version check that falls back to a simpler dialog.
+5. **zbus version** — `nm_monitor.rs` uses the `#[proxy]` macro. Confirm zbus 4.x vs 5.x API compatibility; the `receive_state_changed()` method name is generated by the macro and differs between major versions.

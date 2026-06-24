@@ -1,61 +1,48 @@
-# Next Steps — Phase 5 (Conflict Resolution)
+# Next Steps — Phase 6 (Notifications + Error Handling)
 
-Phase 4 (push) landed bidirectional sync with serialized pull/push pipelines, but
-the engine still relies on simple "newest server wins" + "any local change wins"
-heuristics. Phase 5 closes that gap.
+Phase 5 (Conflict Resolution) shipped: remote-wins + conflict-copy strategy,
+per-document concurrency via `ConcurrentDictionary<string, SemaphoreSlim>`, and
+pre-PATCH `GET /api/documents/[id]` to detect server-side divergence. The
+engine now writes `<name>.conflict-yyyyMMddTHHmmss.md` on conflict and emits
+a `conflict.detected` row in `sync_log` (the log row is the hand-off point
+the notification layer will pick up in Phase 6).
 
-## Goals
+## Phase 5 — done
 
-1. **Detect true conflicts.** A conflict is: the local file has changed since the
-   last recorded SHA-256 (in `SyncStateRecord.Sha256`) **and** the server
-   `UpdatedAt` is newer than the recorded `ServerUpdatedAt`. Both sides have
-   diverged from the last known synced state.
-2. **Default strategy: backup + last-writer-wins.** Match the macOS client:
-   - Rename the local file to `<name>.conflict-<yyyyMMddHHmmss>.md`.
-   - Write the server version to the canonical path.
-   - Append a `conflict.detected` row to `sync_log`.
-   - Toast notification: "Conflict on <name> — local copy preserved."
-3. **`IConflictStrategy` extension point.** Future strategies (server-wins,
-   local-wins, manual-merge) plug in without touching `SyncEngine`.
+- `Sync/IConflictResolver.cs` + `Sync/ConflictResolver.cs` — pure `Decide`
+  function covers all 5 permutations + `ResolveConflictAsync` writes the
+  conflict copy.
+- `SyncEngine` — per-doc `SemaphoreSlim` map (pull uses a dedicated key,
+  push keys on document id once resolved, otherwise on the file path).
+  Conflict branch fetches the live `updatedAt` before PATCH and routes to
+  `ConflictResolver` when remote is newer than `SyncStateRecord.ServerUpdatedAt`.
+- `SyncStateRecord.LastConflictAt` (nullable) + `documents.last_conflict_at`
+  column with an idempotent `ALTER TABLE` migration in `SyncStateRepository`.
+- `FileMapper.GetConflictPath(originalPath, conflictAt)` — UTC-normalized
+  `yyyyMMddTHHmmss` timestamp.
+- `Program.cs` — registered `IConflictResolver` as singleton.
+- Tests: 14 new unit tests (108 → 122 green) covering all 5 conflict
+  permutations, conflict-copy write, parallel-different-docs concurrency,
+  and `GetConflictPath` formatting.
 
-## Suggested shape
+## Phase 6 goals
 
-```csharp
-public interface IConflictStrategy
-{
-    Task<ConflictResolution> ResolveAsync(
-        Document remote,
-        SyncStateRecord localRecord,
-        byte[] localBytes,
-        CancellationToken cancellationToken);
-}
+1. **Toast pipeline.** Drain `conflict.detected` (and other interesting
+   `sync_log` rows) into `Microsoft.Windows.AppNotifications` toasts:
+   "Conflict on <name> — local copy preserved at <conflict path>".
+2. **Error funnel.** A typed `SyncErrorBus` so transient API/file errors
+   surface as a single throttled tray-icon state change instead of one
+   toast per retry.
+3. **Tray badge.** Set tray icon overlay (red dot) on `SyncState.Error`,
+   spinner on `Syncing`, clear on `Idle`.
+4. **Retry policy.** `Polly`-style exponential backoff around `PushOnceAsync`
+   for `5xx` and `HttpRequestException`, capped at 5 attempts; expose the
+   final failure as a toast.
 
-public sealed record ConflictResolution(
-    string CanonicalPath,
-    byte[] CanonicalBytes,
-    string? BackupPath,
-    byte[]? BackupBytes);
-```
+## Open questions for Phase 6
 
-`SyncEngine.ReconcileAsync` calls the strategy when it detects the divergence
-described above, then writes both the canonical and (optional) backup files via
-the existing `WriteDocumentAsync` path.
-
-## Test plan
-
-- Local SHA differs from record AND server `UpdatedAt` newer than record → backup
-  file is created at `<name>.conflict-<ts>.md`, canonical holds the server body.
-- Local SHA differs but server `UpdatedAt` unchanged → push (already covered).
-- Local SHA matches record but server `UpdatedAt` newer → pull overwrite (already
-  covered).
-- `IConflictStrategy` injected as `BackupAndServerWinsStrategy`; a substitute
-  `ServerAlwaysWinsStrategy` validates the extension point.
-
-## Open questions
-
-- Is the conflict filename format `<name>.conflict-<ts>.md` final, or should it
-  match a different macOS pattern (`<name> (conflict <ts>).md`)?
-- Should the conflict toast be best-effort (current notification service), or
-  should it block until acknowledged?
-- Should the engine maintain a per-document conflict counter to suppress
-  repeated toasts within a poll cycle?
+- Should `conflict.detected` toasts coalesce per poll cycle (one toast for
+  N conflicts) or stay one-per-event?
+- Should the tray icon offer a "View conflicts" menu item that opens the
+  sync folder filtered to `*.conflict-*.md`?
+- Where does the retry budget reset — per file, per session, or per poll cycle?

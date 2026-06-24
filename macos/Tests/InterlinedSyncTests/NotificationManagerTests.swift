@@ -109,4 +109,31 @@ final class NotificationManagerTests: XCTestCase {
         XCTAssertEqual(center.requestCount, 1)
         XCTAssertTrue(center.added.isEmpty)
     }
+
+    func testDisabledCategory_suppressesOnlyThatCategory() async {
+        let center = MockNotificationCenter()
+        let manager = NotificationManager(
+            center: center,
+            isEnabled: { true },
+            isCategoryEnabled: { $0 != .completion }
+        )
+
+        await manager.notifySyncCompleted(documentsChanged: 2)
+        await manager.notifySyncFailed(message: "boom")
+
+        XCTAssertEqual(center.addedTitles, ["Sync failed"])
+    }
+
+    func testDisabledConflictCategory_suppressesConflictNotification() async {
+        let center = MockNotificationCenter()
+        let manager = NotificationManager(
+            center: center,
+            isEnabled: { true },
+            isCategoryEnabled: { $0 != .conflict }
+        )
+
+        await manager.notifyConflictCopyCreated(count: 1)
+
+        XCTAssertTrue(center.added.isEmpty)
+    }
 }

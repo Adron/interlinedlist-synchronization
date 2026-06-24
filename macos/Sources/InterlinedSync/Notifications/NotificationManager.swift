@@ -6,21 +6,30 @@ import UserNotifications
 /// `notificationsEnabled` preference. The underlying notification center is injected so the
 /// posting path is exercised in tests without scheduling real system notifications.
 actor NotificationManager {
+    enum Category {
+        case completion
+        case error
+        case conflict
+    }
+
     private let center: UserNotificationScheduling
     private let isEnabled: @Sendable () -> Bool
+    private let isCategoryEnabled: @Sendable (Category) -> Bool
 
     private var didRequestAuthorization = false
 
     init(
         center: UserNotificationScheduling,
-        isEnabled: @escaping @Sendable () -> Bool
+        isEnabled: @escaping @Sendable () -> Bool,
+        isCategoryEnabled: @escaping @Sendable (Category) -> Bool = { _ in true }
     ) {
         self.center = center
         self.isEnabled = isEnabled
+        self.isCategoryEnabled = isCategoryEnabled
     }
 
     func notifySyncCompleted(documentsChanged count: Int) async {
-        guard count > 0 else { return }
+        guard count > 0, isCategoryEnabled(.completion) else { return }
         let body = count == 1
             ? "1 document synced."
             : "\(count) documents synced."
@@ -28,11 +37,12 @@ actor NotificationManager {
     }
 
     func notifySyncFailed(message: String) async {
+        guard isCategoryEnabled(.error) else { return }
         await post(title: "Sync failed", body: message, identifier: "sync.failed")
     }
 
     func notifyConflictCopyCreated(count: Int) async {
-        guard count > 0 else { return }
+        guard count > 0, isCategoryEnabled(.conflict) else { return }
         let body = count == 1
             ? "A conflicting local edit was saved as a copy."
             : "\(count) conflicting local edits were saved as copies."

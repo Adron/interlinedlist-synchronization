@@ -17,6 +17,11 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
 dirs = { workspace = true }
+serde_json = { workspace = true }
+async-trait = { workspace = true }
+
+[features]
+network-monitor = []
 
 [dev-dependencies]
 tokio = { workspace = true }

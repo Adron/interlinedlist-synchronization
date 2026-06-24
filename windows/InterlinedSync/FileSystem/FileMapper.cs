@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Text;
 using InterlinedSync.Sync;
@@ -58,6 +59,22 @@ public sealed class FileMapper : IFileMapper
         ArgumentException.ThrowIfNullOrEmpty(documentId);
         var record = await _repository.GetByIdAsync(documentId, cancellationToken).ConfigureAwait(false);
         return record?.LocalPath;
+    }
+
+    public string GetConflictPath(string originalPath, DateTimeOffset conflictAt)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(originalPath);
+
+        var directory = Path.GetDirectoryName(originalPath) ?? string.Empty;
+        var stem = Path.GetFileNameWithoutExtension(originalPath);
+        if (string.IsNullOrEmpty(stem))
+        {
+            stem = "untitled";
+        }
+
+        var timestamp = conflictAt.ToUniversalTime().ToString("yyyyMMddTHHmmss", CultureInfo.InvariantCulture);
+        var conflictName = $"{stem}.conflict-{timestamp}{DocumentExtension}";
+        return string.IsNullOrEmpty(directory) ? conflictName : Path.Combine(directory, conflictName);
     }
 
     public string SanitizeTitle(string title)

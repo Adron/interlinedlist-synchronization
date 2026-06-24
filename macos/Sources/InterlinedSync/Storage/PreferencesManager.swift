@@ -1,20 +1,70 @@
 import AppKit
+import Combine
 import SwiftUI
 
+/// The user-facing settings the preferences UI and sync engine read and write. Expressed as a
+/// protocol so the view model is testable with a lightweight in-memory double, and so the engine
+/// can depend on the interval publisher without importing AppKit.
 @MainActor
-final class PreferencesManager: ObservableObject {
+protocol PreferenceStoring: AnyObject {
+    var syncFolderPath: String { get set }
+    var pollIntervalSeconds: TimeInterval { get set }
+    var pollIntervalPublisher: AnyPublisher<TimeInterval, Never> { get }
+    var launchAtLogin: Bool { get set }
+    var syncEnabled: Bool { get set }
+    var notificationsEnabled: Bool { get set }
+    var notifyOnSyncCompletion: Bool { get set }
+    var notifyOnErrors: Bool { get set }
+    var notifyOnConflictCopies: Bool { get set }
+    var accountEmail: String { get set }
+    var hasCompletedOnboarding: Bool { get set }
+
+    func selectSyncFolder() async -> URL?
+    func resolveSyncFolder() -> URL?
+}
+
+@MainActor
+final class PreferencesManager: ObservableObject, PreferenceStoring {
+    static let minimumPollIntervalSeconds: TimeInterval = 5
+    static let maximumPollIntervalSeconds: TimeInterval = 300
+
     @AppStorage("syncFolderPath") var syncFolderPath: String = ""
-    @AppStorage("syncIntervalMinutes") var syncIntervalMinutes: Int = 5
     @AppStorage("syncEnabled") var syncEnabled: Bool = true
     @AppStorage("notificationsEnabled") var notificationsEnabled: Bool = true
+    @AppStorage("notifyOnSyncCompletion") var notifyOnSyncCompletion: Bool = true
+    @AppStorage("notifyOnErrors") var notifyOnErrors: Bool = true
+    @AppStorage("notifyOnConflictCopies") var notifyOnConflictCopies: Bool = true
+    @AppStorage("launchAtLogin") var launchAtLogin: Bool = false
+    @AppStorage("accountEmail") var accountEmail: String = ""
     @AppStorage("hasCompletedOnboarding") var hasCompletedOnboarding: Bool = false
 
+    /// Poll cadence the SyncEngine uses, in seconds. Stored directly (clamped to the supported
+    /// range) and published so the running engine can pick up changes without a restart.
+    @Published var pollIntervalSeconds: TimeInterval {
+        didSet {
+            let clamped = Self.clampInterval(pollIntervalSeconds)
+            if clamped != pollIntervalSeconds {
+                pollIntervalSeconds = clamped
+                return
+            }
+            UserDefaults.standard.set(clamped, forKey: Self.intervalKey)
+        }
+    }
+
+    var pollIntervalPublisher: AnyPublisher<TimeInterval, Never> {
+        $pollIntervalSeconds.eraseToAnyPublisher()
+    }
+
+    private static let intervalKey = "pollIntervalSeconds"
     private static let bookmarkKey = "syncFolderBookmark"
 
-    /// Poll cadence the SyncEngine uses, in seconds. Derived from the user-facing minutes
-    /// preference with a 30-second floor so an aggressive setting can't hammer the server.
-    var pollIntervalSeconds: TimeInterval {
-        max(30, TimeInterval(syncIntervalMinutes) * 60)
+    init() {
+        let stored = UserDefaults.standard.object(forKey: Self.intervalKey) as? TimeInterval
+        pollIntervalSeconds = Self.clampInterval(stored ?? 30)
+    }
+
+    private static func clampInterval(_ value: TimeInterval) -> TimeInterval {
+        min(maximumPollIntervalSeconds, max(minimumPollIntervalSeconds, value.rounded()))
     }
 
     func selectSyncFolder() async -> URL? {

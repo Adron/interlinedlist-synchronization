@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tracing::{debug, info};
 
@@ -13,6 +14,9 @@ pub enum StateStoreError {
 
     #[error("database error: {0}")]
     Database(#[from] rusqlite::Error),
+
+    #[error("serialization error: {0}")]
+    Json(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -98,6 +102,15 @@ impl StateStore {
                  CREATE TABLE IF NOT EXISTS meta (
                      key   TEXT PRIMARY KEY,
                      value TEXT NOT NULL
+                 );
+                 CREATE TABLE IF NOT EXISTS pending_ops (
+                     id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                     op_kind      TEXT    NOT NULL,
+                     doc_id       TEXT,
+                     payload_json TEXT    NOT NULL,
+                     queued_at    INTEGER NOT NULL,
+                     retry_count  INTEGER NOT NULL DEFAULT 0,
+                     last_error   TEXT
                  );",
             )
             .context("database migration failed")?;
@@ -238,6 +251,121 @@ impl StateStore {
         )?;
         Ok(())
     }
+
+    pub fn enqueue_op(&self, op: &QueuedOp) -> Result<i64, StateStoreError> {
+        let payload =
+            serde_json::to_string(&op.payload).map_err(|e| StateStoreError::Json(e.to_string()))?;
+        self.conn.execute(
+            "INSERT INTO pending_ops (op_kind, doc_id, payload_json, queued_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![
+                op.op_kind.as_str(),
+                op.doc_id.as_deref(),
+                payload,
+                op.queued_at.timestamp()
+            ],
+        )?;
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn peek_pending_ops(&self, limit: usize) -> Result<Vec<QueuedOp>, StateStoreError> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, op_kind, doc_id, payload_json, queued_at, retry_count, last_error
+             FROM pending_ops
+             ORDER BY id ASC
+             LIMIT ?1",
+        )?;
+        let ops = stmt
+            .query_map(params![limit as i64], row_to_queued_op)?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(ops)
+    }
+
+    pub fn mark_op_done(&self, id: i64) -> Result<(), StateStoreError> {
+        self.conn
+            .execute("DELETE FROM pending_ops WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn mark_op_failed(&self, id: i64, error: &str) -> Result<(), StateStoreError> {
+        self.conn.execute(
+            "UPDATE pending_ops
+             SET retry_count = retry_count + 1, last_error = ?1
+             WHERE id = ?2",
+            params![error, id],
+        )?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OpKind {
+    Upload,
+    Delete,
+    Rename,
+}
+
+impl OpKind {
+    fn as_str(&self) -> &'static str {
+        match self {
+            OpKind::Upload => "upload",
+            OpKind::Delete => "delete",
+            OpKind::Rename => "rename",
+        }
+    }
+
+    fn from_str(s: &str) -> Self {
+        match s {
+            "delete" => OpKind::Delete,
+            "rename" => OpKind::Rename,
+            _ => OpKind::Upload,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueuedOp {
+    pub id: i64,
+    pub op_kind: OpKind,
+    pub doc_id: Option<String>,
+    pub payload: serde_json::Value,
+    pub queued_at: DateTime<Utc>,
+    pub retry_count: i64,
+    pub last_error: Option<String>,
+}
+
+impl QueuedOp {
+    pub fn new(op_kind: OpKind, doc_id: Option<String>, payload: serde_json::Value) -> Self {
+        Self {
+            id: 0,
+            op_kind,
+            doc_id,
+            payload,
+            queued_at: Utc::now(),
+            retry_count: 0,
+            last_error: None,
+        }
+    }
+}
+
+fn row_to_queued_op(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueuedOp> {
+    let op_kind_str: String = row.get(1)?;
+    let payload_str: String = row.get(3)?;
+    let queued_at_secs: i64 = row.get(4)?;
+
+    let payload: serde_json::Value =
+        serde_json::from_str(&payload_str).unwrap_or(serde_json::Value::Null);
+
+    Ok(QueuedOp {
+        id: row.get(0)?,
+        op_kind: OpKind::from_str(&op_kind_str),
+        doc_id: row.get(2)?,
+        payload,
+        queued_at: DateTime::from_timestamp(queued_at_secs, 0).unwrap_or_else(Utc::now),
+        retry_count: row.get(5)?,
+        last_error: row.get(6)?,
+    })
 }
 
 fn row_to_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<DocumentRecord> {
@@ -406,5 +534,102 @@ mod tests {
 
         store.set_pending_op(&path, &PendingOp::None).unwrap();
         assert_eq!(store.lookup(&path).unwrap().pending_op, PendingOp::None);
+    }
+
+    #[test]
+    fn enqueue_then_peek_returns_op() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir);
+
+        let op = QueuedOp::new(
+            OpKind::Upload,
+            Some("doc-1".to_string()),
+            serde_json::json!({"path": "/docs/note.md"}),
+        );
+        let id = store.enqueue_op(&op).unwrap();
+        assert!(id > 0);
+
+        let ops = store.peek_pending_ops(10).unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].id, id);
+        assert_eq!(ops[0].op_kind, OpKind::Upload);
+        assert_eq!(ops[0].doc_id.as_deref(), Some("doc-1"));
+    }
+
+    #[test]
+    fn mark_op_done_removes_it() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir);
+
+        let op = QueuedOp::new(
+            OpKind::Delete,
+            Some("doc-2".to_string()),
+            serde_json::json!({}),
+        );
+        let id = store.enqueue_op(&op).unwrap();
+
+        store.mark_op_done(id).unwrap();
+
+        let ops = store.peek_pending_ops(10).unwrap();
+        assert!(ops.is_empty());
+    }
+
+    #[test]
+    fn mark_op_failed_increments_retry() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir);
+
+        let op = QueuedOp::new(OpKind::Upload, None, serde_json::json!({}));
+        let id = store.enqueue_op(&op).unwrap();
+
+        store.mark_op_failed(id, "connection refused").unwrap();
+        store.mark_op_failed(id, "timeout").unwrap();
+
+        let ops = store.peek_pending_ops(10).unwrap();
+        assert_eq!(ops[0].retry_count, 2);
+        assert_eq!(ops[0].last_error.as_deref(), Some("timeout"));
+    }
+
+    #[test]
+    fn peek_respects_limit() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir);
+
+        for i in 0..5 {
+            let op = QueuedOp::new(
+                OpKind::Upload,
+                Some(format!("doc-{i}")),
+                serde_json::json!({}),
+            );
+            store.enqueue_op(&op).unwrap();
+        }
+
+        let ops = store.peek_pending_ops(3).unwrap();
+        assert_eq!(ops.len(), 3);
+    }
+
+    #[test]
+    fn peek_returns_oldest_first() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir);
+
+        let id1 = store
+            .enqueue_op(&QueuedOp::new(
+                OpKind::Upload,
+                Some("a".into()),
+                serde_json::json!({}),
+            ))
+            .unwrap();
+        let id2 = store
+            .enqueue_op(&QueuedOp::new(
+                OpKind::Delete,
+                Some("b".into()),
+                serde_json::json!({}),
+            ))
+            .unwrap();
+
+        let ops = store.peek_pending_ops(10).unwrap();
+        assert_eq!(ops[0].id, id1);
+        assert_eq!(ops[1].id, id2);
     }
 }

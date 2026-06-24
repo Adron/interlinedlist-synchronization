@@ -2,7 +2,40 @@
 
 ## Current State
 
-Phase 4 (Menu Bar UI + Notifications) is complete. `swift test` passes: 70/70.
+Phase 5 (Preferences + Login Item) is complete. `swift test` passes: 112 tests
+(107 unit + 5 live-API integration, which skip without credentials).
+
+### What Phase 5 added
+
+- `UI/PreferencesView.swift` — real settings window as a `TabView` (480×360, non-resizable):
+  - **General**: sync folder display + "Choose…" (`NSOpenPanel`, security-scoped bookmark via
+    `PreferencesManager.selectSyncFolder()`); "Launch at Login" toggle; sync-interval `Slider`
+    (5–300 s, integer steps) bound to `pollIntervalSeconds`
+  - **Account**: "Signed in as …" (from `accountEmail`) + "Sign Out"
+  - **Notifications**: master "Enable notifications" toggle + per-category sub-toggles
+    (completion / errors / conflict copies)
+  - **Advanced**: log-file path + "Reveal in Finder", "Reset State" with confirmation alert,
+    version/build from `Bundle.main`
+- `UI/PreferencesViewModel.swift` — `@MainActor ObservableObject` driving the panels; owns the
+  side-effecting account actions (sign out, reset state) as injected closures
+- `Storage/PreferencesManager.swift` — added `PreferenceStoring` protocol seam; `pollIntervalSeconds`
+  is now a stored, clamped (5–300 s), persisted, `@Published` value with a Combine publisher; added
+  `launchAtLogin`, `notifyOnSyncCompletion/Errors/ConflictCopies`, `accountEmail`
+- `Storage/LaunchAgentManager.swift` — `LoginItemManaging` protocol seam +
+  `SMAppServiceLoginItemManager` (production) wrapping `SMAppService.mainApp`
+- `Sync/SyncEngine.swift` — `bindPollInterval(to:)` Combine subscription + `updatePollInterval(_:)`
+  reschedule the live poll timer; `resetLedger()` clears the in-memory ledger and sync marker
+- `Sync/SyncState.swift` — added `resetSyncMarker()`
+- `Notifications/NotificationManager.swift` — added per-`Category` gating predicate
+- `MenuBar/StatusItemController.swift` — Preferences menu item opens (and re-activates) a single
+  `NSHostingController`-backed window built from the injected `PreferencesViewModel`
+- `App/AppDelegate.swift` — wires the login-item manager, builds the `PreferencesViewModel`, binds
+  the engine's poll interval, routes notification categories, and implements the sign-out flow
+  (clears Keychain token + ledger, returns to onboarding)
+- `UI/OnboardingView.swift` — persists `accountEmail` on successful sign-in
+- Tests: `PreferencesViewTests` (10), `PreferencesManagerTests` (6), `LaunchAgentManagerTests` (3),
+  `SyncEngineTests.testSyncEngine_pickUpNewIntervalLive`, two notification-category cases;
+  `MockLoginItemManager`, `MockPreferencesManager`
 
 ### What Phase 4 added
 
@@ -61,29 +94,31 @@ bidirectional sync) landed the `SyncEngine` actor, `ChangeSet`, `ConflictResolve
 
 ## Next Phase to Implement
 
-### Phase 5 — Preferences + Login Item
+### Phase 6 — Conflict Resolution + Error Handling
 
-Files to implement (currently stubs / partial):
+1. **`ConflictResolver`** — user-selectable strategy (remote-wins is the current default;
+   consider local-wins and newest-wins); surface the choice in the new Preferences General/Advanced
+   tab so it persists via `PreferencesManager`
+2. **Resilience** — retry/backoff for transient network failures in `SyncEngine`/`InterlinedListClient`;
+   distinguish retryable vs. fatal `SyncError` cases
+3. **Comprehensive `SyncError` mapping** — ensure every surfaced error maps to a user-readable
+   message and the right notification category
+4. **Tests** — conflict-strategy matrix, backoff/retry behavior, error-mapping coverage
 
-1. **`UI/PreferencesView.swift`** — full settings form bound to `PreferencesManager`:
-   - Sync folder (re-open `NSOpenPanel` via `selectSyncFolder()`), shown as a path
-   - Sync interval (minutes; drives `pollIntervalSeconds`)
-   - Launch at login toggle (see below)
-   - **Notifications toggle** — bind to the new `PreferencesManager.notificationsEnabled`
-     (added in Phase 4 but not yet surfaced in the UI)
-2. **`Storage/LaunchAgentManager.swift`** — wrap `SMAppService.mainApp` (macOS 13+) for a
-   one-line register/unregister Login Item; reflect `status` in the toggle
-3. **Wire-up** — changing the interval should reach the running `SyncEngine`. Phase 4 reads
-   `pollIntervalSeconds` once at construction; either rebuild the engine on change or add an
-   engine method to update its poll cadence live.
-4. **Tests** — `PreferencesManagerTests` (interval flooring, notifications default),
-   `LaunchAgentManagerTests` (mock `SMAppService` behind a protocol seam)
+### Phase 7 — Packaging & Distribution
 
-### Phases 6–7 (in order)
+- Code signing, entitlements (the security-scoped bookmark + login item need the App Sandbox
+  entitlements once sandboxed), `PrivacyInfo.xcprivacy`, notarization pipeline
 
-1. `ConflictResolver` — user-selectable strategy (remote-wins is the current default) +
-   retry/backoff for transient network failures; comprehensive `SyncError` mapping
-2. Code signing, entitlements, `PrivacyInfo.xcprivacy`, notarization pipeline
+### Open follow-ups from Phase 5
+
+- The "Reveal in Finder" log path is a placeholder location; wire it to the real logging
+  destination once a logger lands.
+- `SMAppServiceLoginItemManager` can surface a System Settings approval prompt the first time it
+  registers; the toggle reverts and shows guidance on failure but cannot detect "pending approval"
+  state distinctly from "enabled" via `SMAppService.status` alone.
+- Security-scoped bookmarks only matter under the App Sandbox (Phase 7); until then folder access
+  works without `startAccessingSecurityScopedResource()`.
 
 ### Carried-over API assumptions to verify before shipping
 

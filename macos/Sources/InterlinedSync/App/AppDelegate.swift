@@ -13,6 +13,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let preferences = PreferencesManager()
     private let keychain = KeychainManager()
     private let syncState = SyncState()
+    private let loginItems: LoginItemManaging = SMAppServiceLoginItemManager()
     private lazy var authManager = AuthManager(
         baseURL: Self.apiBaseURL,
         session: .shared,
@@ -22,6 +23,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         center: UNUserNotificationCenter.current(),
         isEnabled: {
             UserDefaults.standard.object(forKey: "notificationsEnabled") as? Bool ?? true
+        },
+        isCategoryEnabled: { category in
+            let key: String
+            switch category {
+            case .completion: key = "notifyOnSyncCompletion"
+            case .error: key = "notifyOnErrors"
+            case .conflict: key = "notifyOnConflictCopies"
+            }
+            return UserDefaults.standard.object(forKey: key) as? Bool ?? true
         }
     )
 
@@ -53,11 +63,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         syncEngine = engine
 
+        let publisher = preferences.pollIntervalPublisher
+        Task { await engine.bindPollInterval(to: publisher) }
+
+        let preferencesViewModel = PreferencesViewModel(
+            preferences: preferences,
+            loginItems: loginItems,
+            onSignOut: { [weak self] in await self?.signOut() },
+            onResetState: { await engine.resetLedger() }
+        )
+
         statusItemController = StatusItemController(
             presenter: AppKitStatusItemPresenter(),
             preferences: preferences,
             state: syncState,
-            coordinator: engine
+            coordinator: engine,
+            preferencesViewModel: preferencesViewModel
         )
 
         if preferences.syncEnabled {
@@ -65,6 +86,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             syncState.paused()
         }
+    }
+
+    private func signOut() async {
+        await syncEngine?.stop()
+        await authManager.logout()
+        await syncEngine?.resetLedger()
+        syncEngine = nil
+
+        preferences.hasCompletedOnboarding = false
+        preferences.accountEmail = ""
+        syncState.resetSyncMarker()
+
+        statusItemController = nil
+        presentOnboarding()
     }
 
     private func presentOnboarding() {

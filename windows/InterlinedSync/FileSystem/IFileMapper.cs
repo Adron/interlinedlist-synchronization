@@ -33,4 +33,11 @@ public interface IFileMapper
     /// Exposed primarily for testing.
     /// </summary>
     string SanitizeTitle(string title);
+
+    /// <summary>
+    /// Returns the conflict-copy path that should be used to preserve a divergent
+    /// local edit. Format: <c>&lt;basename&gt;.conflict-&lt;yyyyMMddTHHmmss&gt;.md</c>
+    /// next to the original file.
+    /// </summary>
+    string GetConflictPath(string originalPath, DateTimeOffset conflictAt);
 }

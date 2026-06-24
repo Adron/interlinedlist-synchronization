@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 /// Drives the bidirectional sync cycle: pull remote changes to disk, push local changes to the
@@ -10,12 +11,13 @@ actor SyncEngine {
     private let resolver: ConflictResolving
     private let state: SyncState
     private let notifications: NotificationManager?
-    private let pollInterval: TimeInterval
+    private var pollInterval: TimeInterval
 
     private var ledger: [String: SyncRecord] = [:]
     private var watcher: FSEventsWatcher?
     private var pollTask: Task<Void, Never>?
     private var watchTask: Task<Void, Never>?
+    private var intervalCancellable: AnyCancellable?
     private var isSyncing = false
 
     init(
@@ -54,7 +56,8 @@ actor SyncEngine {
             guard let self else { return }
             await self.syncNow()
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(self.pollInterval * 1_000_000_000))
+                let interval = await self.currentPollInterval
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
                 if Task.isCancelled { return }
                 await self.syncNow()
             }
@@ -68,6 +71,47 @@ actor SyncEngine {
         watchTask = nil
         watcher?.stop()
         watcher = nil
+    }
+
+    /// Clears the in-memory ledger so the next cycle rebuilds from a full server fetch. Auth and
+    /// on-disk documents are left untouched.
+    func resetLedger() async {
+        ledger.removeAll()
+        await state.resetSyncMarker()
+    }
+
+    /// Subscribes to live changes of the user's poll-interval preference. The publisher is
+    /// `@MainActor`-isolated, so updates are bridged back into the actor via a `Task`.
+    func bindPollInterval(to publisher: AnyPublisher<TimeInterval, Never>) {
+        intervalCancellable = publisher
+            .removeDuplicates()
+            .sink { [weak self] interval in
+                Task { await self?.updatePollInterval(interval) }
+            }
+    }
+
+    func updatePollInterval(_ interval: TimeInterval) {
+        guard interval > 0, interval != pollInterval else { return }
+        pollInterval = interval
+        guard pollTask != nil else { return }
+        reschedulePollTimer()
+    }
+
+    var currentPollInterval: TimeInterval {
+        pollInterval
+    }
+
+    private func reschedulePollTimer() {
+        pollTask?.cancel()
+        pollTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                let interval = await self.currentPollInterval
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                if Task.isCancelled { return }
+                await self.syncNow()
+            }
+        }
     }
 
     func pause() async {

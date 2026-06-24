@@ -2,6 +2,7 @@ using System.IO;
 using System.IO.Abstractions;
 using System.IO.Abstractions.TestingHelpers;
 using System.Net;
+using System.Text;
 using FluentAssertions;
 using InterlinedSync.API;
 using InterlinedSync.API.Models;
@@ -28,6 +29,7 @@ public sealed class SyncEngineTests : IAsyncLifetime
     private MockHttpMessageHandler _http = null!;
     private InterlinedListClient _client = null!;
     private StubFileWatcher _watcher = null!;
+    private ConflictResolver _conflictResolver = null!;
     private SyncEngine _engine = null!;
 
     public async Task InitializeAsync()
@@ -58,6 +60,7 @@ public sealed class SyncEngineTests : IAsyncLifetime
         var monitor = new TestOptionsMonitor<SyncPreferences>(prefs);
 
         _watcher = new StubFileWatcher();
+        _conflictResolver = new ConflictResolver(_fileSystem, _fileMapper, _repository, NullLogger<ConflictResolver>.Instance);
 
         _engine = new SyncEngine(
             _client,
@@ -66,6 +69,7 @@ public sealed class SyncEngineTests : IAsyncLifetime
             _notifier,
             _fileSystem,
             _watcher,
+            _conflictResolver,
             monitor,
             NullLogger<SyncEngine>.Instance);
     }
@@ -219,7 +223,7 @@ public sealed class SyncEngineTests : IAsyncLifetime
         var prefs = new SyncPreferences { SyncFolder = string.Empty };
         var monitor = new TestOptionsMonitor<SyncPreferences>(prefs);
         var engine = new SyncEngine(
-            _client, _repository, _fileMapper, _notifier, _fileSystem, _watcher, monitor,
+            _client, _repository, _fileMapper, _notifier, _fileSystem, _watcher, _conflictResolver, monitor,
             NullLogger<SyncEngine>.Instance);
 
         var result = await engine.RunOnceAsync(default);
@@ -254,6 +258,10 @@ public sealed class SyncEngineTests : IAsyncLifetime
             new DateTimeOffset(2026, 6, 20, 0, 0, 0, TimeSpan.Zero),
             new DateTimeOffset(2026, 6, 20, 0, 0, 0, TimeSpan.Zero),
             "oldsha"));
+
+        var unchangedRemote = new Document("doc-1", "Existing", null, "server body",
+            new DateTimeOffset(2026, 6, 20, 0, 0, 0, TimeSpan.Zero));
+        StubGetDocument("doc-1", unchangedRemote);
 
         var updated = new Document("doc-1", "Existing", null, "updated body",
             new DateTimeOffset(2026, 6, 22, 0, 0, 0, TimeSpan.Zero));
@@ -415,6 +423,79 @@ public sealed class SyncEngineTests : IAsyncLifetime
         (await _repository.GetByIdAsync("doc-dead")).Should().BeNull();
     }
 
+    [Fact]
+    public async Task PushOnceAsync_ProducesConflictCopy_WhenRemoteChangedSinceLastSync()
+    {
+        var path = Path.Combine(SyncFolder, "Conflicted.md");
+        _fileSystem.AddFile(path, new MockFileData("local edits"));
+        var lastSyncedServerTime = new DateTimeOffset(2026, 6, 20, 0, 0, 0, TimeSpan.Zero);
+        await _repository.UpsertDocumentAsync(new SyncStateRecord(
+            "doc-1", path, lastSyncedServerTime, lastSyncedServerTime, "oldsha"));
+
+        var newerRemote = new Document("doc-1", "Conflicted", null, "server-wins body",
+            new DateTimeOffset(2026, 6, 22, 0, 0, 0, TimeSpan.Zero));
+        StubGetDocument("doc-1", newerRemote);
+
+        _http.When(HttpMethod.Patch, "*/api/documents/doc-1")
+             .Respond(System.Net.HttpStatusCode.InternalServerError);
+
+        var result = await _engine.PushOnceAsync(new LocalChange(LocalChangeKind.Modified, path), default);
+
+        result.Action.Should().Be("conflict");
+        result.ConflictCopyPath.Should().NotBeNullOrEmpty();
+        _fileSystem.File.Exists(result.ConflictCopyPath!).Should().BeTrue();
+        _fileSystem.File.ReadAllText(result.ConflictCopyPath!).Should().Be("local edits");
+        _fileSystem.File.ReadAllText(path).Should().Be("server-wins body");
+
+        var record = await _repository.GetByIdAsync("doc-1");
+        record!.LastConflictAt.Should().NotBeNull();
+        record.ServerUpdatedAt.Should().Be(newerRemote.UpdatedAt);
+    }
+
+    [Fact]
+    public async Task PushOnceAsync_RunsInParallel_AcrossDifferentDocuments()
+    {
+        var pathA = Path.Combine(SyncFolder, "DocA.md");
+        var pathB = Path.Combine(SyncFolder, "DocB.md");
+        _fileSystem.AddFile(pathA, new MockFileData("body A"));
+        _fileSystem.AddFile(pathB, new MockFileData("body B"));
+
+        var docA = new Document("doc-A", "DocA", null, "body A",
+            new DateTimeOffset(2026, 6, 22, 12, 0, 0, TimeSpan.Zero));
+        var docB = new Document("doc-B", "DocB", null, "body B",
+            new DateTimeOffset(2026, 6, 22, 12, 0, 0, TimeSpan.Zero));
+
+        var inflight = 0;
+        var maxInflight = 0;
+        var sync = new object();
+        _http.When(HttpMethod.Post, "*/api/documents")
+             .Respond(async _ =>
+             {
+                 int current;
+                 lock (sync)
+                 {
+                     inflight++;
+                     current = inflight;
+                     if (current > maxInflight) { maxInflight = current; }
+                 }
+                 await Task.Delay(80);
+                 lock (sync) { inflight--; }
+
+                 var envelope = new { message = "Document created", document = docA };
+                 var json = System.Text.Json.JsonSerializer.Serialize(envelope, StubJson);
+                 return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                 {
+                     Content = new StringContent(json, Encoding.UTF8, "application/json"),
+                 };
+             });
+
+        var taskA = _engine.PushOnceAsync(new LocalChange(LocalChangeKind.Created, pathA), default);
+        var taskB = _engine.PushOnceAsync(new LocalChange(LocalChangeKind.Created, pathB), default);
+        await Task.WhenAll(taskA, taskB);
+
+        maxInflight.Should().BeGreaterThan(1, "two unrelated docs must not serialize through a global lock");
+    }
+
     private static readonly System.Text.Json.JsonSerializerOptions StubJson = new()
     {
         PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
@@ -450,6 +531,13 @@ public sealed class SyncEngineTests : IAsyncLifetime
         var envelope = new { message = "Document updated", document = doc };
         var json = System.Text.Json.JsonSerializer.Serialize(envelope, StubJson);
         _http.When(HttpMethod.Patch, $"*/api/documents/{id}")
+             .Respond("application/json", json);
+    }
+
+    private void StubGetDocument(string id, Document doc)
+    {
+        var json = System.Text.Json.JsonSerializer.Serialize(doc, StubJson);
+        _http.When(HttpMethod.Get, $"*/api/documents/{id}")
              .Respond("application/json", json);
     }
 

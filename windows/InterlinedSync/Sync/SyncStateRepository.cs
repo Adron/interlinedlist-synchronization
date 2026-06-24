@@ -58,35 +58,40 @@ public sealed class SyncStateRepository : ISyncStateRepository, IAsyncDisposable
                 await pragma.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
 
-            await using var cmd = connection.CreateCommand();
-            cmd.CommandText = """
-                CREATE TABLE IF NOT EXISTS documents (
-                    id TEXT PRIMARY KEY,
-                    local_path TEXT NOT NULL,
-                    server_updated_at TEXT NOT NULL,
-                    local_modified_at TEXT NOT NULL,
-                    sha256 TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS ix_documents_local_path ON documents(local_path);
+            await using (var cmd = connection.CreateCommand())
+            {
+                cmd.CommandText = """
+                    CREATE TABLE IF NOT EXISTS documents (
+                        id TEXT PRIMARY KEY,
+                        local_path TEXT NOT NULL,
+                        server_updated_at TEXT NOT NULL,
+                        local_modified_at TEXT NOT NULL,
+                        sha256 TEXT NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS ix_documents_local_path ON documents(local_path);
 
-                CREATE TABLE IF NOT EXISTS folders (
-                    id TEXT PRIMARY KEY,
-                    local_path TEXT NOT NULL
-                );
+                    CREATE TABLE IF NOT EXISTS folders (
+                        id TEXT PRIMARY KEY,
+                        local_path TEXT NOT NULL
+                    );
 
-                CREATE TABLE IF NOT EXISTS sync_log (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    ts TEXT NOT NULL,
-                    event TEXT NOT NULL,
-                    detail TEXT NOT NULL
-                );
+                    CREATE TABLE IF NOT EXISTS sync_log (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        ts TEXT NOT NULL,
+                        event TEXT NOT NULL,
+                        detail TEXT NOT NULL
+                    );
 
-                CREATE TABLE IF NOT EXISTS sync_metadata (
-                    key TEXT PRIMARY KEY,
-                    value TEXT NOT NULL
-                );
-                """;
-            await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+                    CREATE TABLE IF NOT EXISTS sync_metadata (
+                        key TEXT PRIMARY KEY,
+                        value TEXT NOT NULL
+                    );
+                    """;
+                await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            await MigrateAddLastConflictAtAsync(connection, cancellationToken).ConfigureAwait(false);
+
             _initialized = true;
             _logger.LogInformation("Sync state DB initialized at {ConnectionString}.", _connectionString);
         }
@@ -108,19 +113,23 @@ public sealed class SyncStateRepository : ISyncStateRepository, IAsyncDisposable
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             await using var cmd = connection.CreateCommand();
             cmd.CommandText = """
-                INSERT INTO documents (id, local_path, server_updated_at, local_modified_at, sha256)
-                VALUES ($id, $path, $server, $local, $sha)
+                INSERT INTO documents (id, local_path, server_updated_at, local_modified_at, sha256, last_conflict_at)
+                VALUES ($id, $path, $server, $local, $sha, $conflict)
                 ON CONFLICT(id) DO UPDATE SET
                     local_path = excluded.local_path,
                     server_updated_at = excluded.server_updated_at,
                     local_modified_at = excluded.local_modified_at,
-                    sha256 = excluded.sha256;
+                    sha256 = excluded.sha256,
+                    last_conflict_at = excluded.last_conflict_at;
                 """;
             cmd.Parameters.AddWithValue("$id", record.Id);
             cmd.Parameters.AddWithValue("$path", record.LocalPath);
             cmd.Parameters.AddWithValue("$server", record.ServerUpdatedAt.ToString(TimestampFormat, CultureInfo.InvariantCulture));
             cmd.Parameters.AddWithValue("$local", record.LocalModifiedAt.ToString(TimestampFormat, CultureInfo.InvariantCulture));
             cmd.Parameters.AddWithValue("$sha", record.Sha256);
+            cmd.Parameters.AddWithValue("$conflict", record.LastConflictAt is { } c
+                ? c.ToString(TimestampFormat, CultureInfo.InvariantCulture)
+                : (object)DBNull.Value);
 
             await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
@@ -142,7 +151,7 @@ public sealed class SyncStateRepository : ISyncStateRepository, IAsyncDisposable
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             await using var cmd = connection.CreateCommand();
             cmd.CommandText = """
-                SELECT id, local_path, server_updated_at, local_modified_at, sha256
+                SELECT id, local_path, server_updated_at, local_modified_at, sha256, last_conflict_at
                 FROM documents
                 WHERE id = $id;
                 """;
@@ -168,7 +177,7 @@ public sealed class SyncStateRepository : ISyncStateRepository, IAsyncDisposable
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             await using var cmd = connection.CreateCommand();
             cmd.CommandText = """
-                SELECT id, local_path, server_updated_at, local_modified_at, sha256
+                SELECT id, local_path, server_updated_at, local_modified_at, sha256, last_conflict_at
                 FROM documents
                 WHERE local_path = $path COLLATE NOCASE;
                 """;
@@ -214,7 +223,7 @@ public sealed class SyncStateRepository : ISyncStateRepository, IAsyncDisposable
             await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
             await using var cmd = connection.CreateCommand();
             cmd.CommandText = """
-                SELECT id, local_path, server_updated_at, local_modified_at, sha256
+                SELECT id, local_path, server_updated_at, local_modified_at, sha256, last_conflict_at
                 FROM documents;
                 """;
             await using var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
@@ -325,13 +334,35 @@ public sealed class SyncStateRepository : ISyncStateRepository, IAsyncDisposable
         await InitializeAsync(cancellationToken).ConfigureAwait(false);
     }
 
+    private static async Task MigrateAddLastConflictAtAsync(SqliteConnection connection, CancellationToken cancellationToken)
+    {
+        await using var check = connection.CreateCommand();
+        check.CommandText = "SELECT COUNT(*) FROM pragma_table_info('documents') WHERE name = 'last_conflict_at';";
+        var present = Convert.ToInt64(await check.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false), CultureInfo.InvariantCulture);
+        if (present > 0)
+        {
+            return;
+        }
+
+        await using var alter = connection.CreateCommand();
+        alter.CommandText = "ALTER TABLE documents ADD COLUMN last_conflict_at TEXT;";
+        await alter.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+    }
+
     private static SyncStateRecord Read(SqliteDataReader reader)
     {
+        DateTimeOffset? lastConflict = null;
+        if (!reader.IsDBNull(5))
+        {
+            lastConflict = DateTimeOffset.Parse(reader.GetString(5), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+        }
+
         return new SyncStateRecord(
             Id: reader.GetString(0),
             LocalPath: reader.GetString(1),
             ServerUpdatedAt: DateTimeOffset.Parse(reader.GetString(2), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
             LocalModifiedAt: DateTimeOffset.Parse(reader.GetString(3), CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
-            Sha256: reader.GetString(4));
+            Sha256: reader.GetString(4),
+            LastConflictAt: lastConflict);
     }
 }

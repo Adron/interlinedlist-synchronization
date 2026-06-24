@@ -79,35 +79,90 @@ fn build_and_show_settings(config_path: PathBuf) {
         .default_height(500)
         .build();
 
-    window.add(&build_folders_page(
-        &config,
-        config_path.clone(),
-        window.clone().upcast(),
-    ));
-    window.add(&build_sync_page(
-        &config,
-        config_path.clone(),
-        window.clone().upcast(),
-    ));
-    window.add(&build_notifications_page(
-        &config,
-        config_path.clone(),
-        window.clone().upcast(),
-    ));
-    window.add(&build_account_page(
-        &config,
-        config_path,
-        window.clone().upcast(),
-    ));
+    // Each build_*_page returns the page widget plus a Clone-able closure that
+    // reads the current widget values into AppConfig.  Apply and close_request
+    // both call all four collectors and write config exactly once.
+    let (folders_page, collect_folders) = build_folders_page(&config);
+    let (sync_page, collect_sync) = build_sync_page(&config);
+    let (notif_page, collect_notif) = build_notifications_page(&config);
+    let (account_page, collect_account) = build_account_page(&config);
+
+    window.add(&folders_page);
+    window.add(&sync_page);
+    window.add(&notif_page);
+    window.add(&account_page);
+
+    let do_save = {
+        let cp = config_path.clone();
+        let cf = collect_folders.clone();
+        let cs = collect_sync.clone();
+        let cn = collect_notif.clone();
+        let ca = collect_account.clone();
+        move |win: &gtk4::Window| {
+            let store = ConfigStore::new(cp.clone());
+            let mut cfg = store.load_or_default().unwrap_or_default();
+            cf(&mut cfg);
+            cs(&mut cfg);
+            cn(&mut cfg);
+            ca(&mut cfg);
+            if let Err(e) = store.save(&cfg) {
+                error!("failed to save settings: {e}");
+                show_error_toast(win, &format!("Failed to save: {e}"));
+            }
+        }
+    };
+
+    let apply_button = gtk4::Button::builder()
+        .label("Apply")
+        .css_classes(["suggested-action"])
+        .halign(gtk4::Align::End)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_end(12)
+        .build();
+
+    {
+        let win = window.clone();
+        let save = do_save.clone();
+        apply_button.connect_clicked(move |_| {
+            save(&win.clone().upcast());
+        });
+    }
+
+    let revert_button = gtk4::Button::builder()
+        .label("Revert")
+        .halign(gtk4::Align::Start)
+        .margin_top(12)
+        .margin_bottom(12)
+        .margin_start(12)
+        .build();
+
+    {
+        let cp = config_path.clone();
+        let win = window.clone();
+        revert_button.connect_clicked(move |_| {
+            win.close();
+            build_and_show_settings(cp.clone());
+        });
+    }
+
+    {
+        let save = do_save.clone();
+        window.connect_close_request(move |win| {
+            save(&win.clone().upcast());
+            glib::Propagation::Proceed
+        });
+    }
 
     window.present();
 }
 
 fn build_folders_page(
     config: &AppConfig,
-    _config_path: PathBuf,
-    window: gtk4::Window,
-) -> libadwaita::PreferencesPage {
+) -> (
+    libadwaita::PreferencesPage,
+    impl Fn(&mut AppConfig) + Clone + 'static,
+) {
     let page = libadwaita::PreferencesPage::builder()
         .title("Watched Folders")
         .icon_name("folder-symbolic")
@@ -143,7 +198,7 @@ fn build_folders_page(
             .modal(true)
             .build();
         let row_inner = row_clone.clone();
-        let parent: Option<&gtk4::Window> = Some(&window);
+        let parent: Option<&gtk4::Window> = None;
         dialog.select_folder(parent, gtk4::gio::Cancellable::NONE, move |result| {
             if let Ok(file) = result {
                 if let Some(path) = file.path() {
@@ -156,14 +211,24 @@ fn build_folders_page(
     row.add_suffix(&button);
     group.add(&row);
     page.add(&group);
-    page
+
+    let row_ref = row.clone();
+    let collect = move |cfg: &mut AppConfig| {
+        let subtitle = row_ref.subtitle().unwrap_or_default();
+        if !subtitle.is_empty() {
+            cfg.sync.watched_dirs = vec![subtitle.to_string()];
+        }
+    };
+
+    (page, collect)
 }
 
 fn build_sync_page(
     config: &AppConfig,
-    config_path: PathBuf,
-    window: gtk4::Window,
-) -> libadwaita::PreferencesPage {
+) -> (
+    libadwaita::PreferencesPage,
+    impl Fn(&mut AppConfig) + Clone + 'static,
+) {
     let page = libadwaita::PreferencesPage::builder()
         .title("Sync")
         .icon_name("emblem-synchronizing-symbolic")
@@ -193,55 +258,55 @@ fn build_sync_page(
         .subtitle("Save a timestamped copy alongside the incoming server version.")
         .activatable(true)
         .build();
+    let local_wins_row = libadwaita::ActionRow::builder()
+        .title("Local wins")
+        .subtitle("Keep the local version and ignore the incoming server version.")
+        .activatable(true)
+        .build();
 
     let radio_remote = gtk4::CheckButton::new();
     let radio_copy = gtk4::CheckButton::builder().group(&radio_remote).build();
+    let radio_local = gtk4::CheckButton::builder().group(&radio_remote).build();
 
     match config.sync.conflict_resolution {
         ConflictResolution::RemoteWins => radio_remote.set_active(true),
         ConflictResolution::ConflictCopy => radio_copy.set_active(true),
+        ConflictResolution::LocalWins => radio_local.set_active(true),
     }
 
     remote_wins_row.add_prefix(&radio_remote);
     conflict_copy_row.add_prefix(&radio_copy);
+    local_wins_row.add_prefix(&radio_local);
     conflict_group.add(&remote_wins_row);
     conflict_group.add(&conflict_copy_row);
-
-    // Save button.
-    let save_group = libadwaita::PreferencesGroup::new();
-    let save_row = libadwaita::ActionRow::builder()
-        .title("Save")
-        .activatable(true)
-        .build();
-    let interval_row_ref = interval_row.clone();
-    let radio_remote_ref = radio_remote.clone();
-    save_row.connect_activated(move |_| {
-        let store = ConfigStore::new(config_path.clone());
-        let mut cfg = store.load_or_default().unwrap_or_default();
-        cfg.sync.interval_seconds = interval_row_ref.value() as u64;
-        cfg.sync.conflict_resolution = if radio_remote_ref.is_active() {
-            ConflictResolution::RemoteWins
-        } else {
-            ConflictResolution::ConflictCopy
-        };
-        if let Err(e) = store.save(&cfg) {
-            error!("failed to save sync config: {e}");
-            show_error_toast(&window, &format!("Failed to save: {e}"));
-        }
-    });
-    save_group.add(&save_row);
+    conflict_group.add(&local_wins_row);
 
     page.add(&interval_group);
     page.add(&conflict_group);
-    page.add(&save_group);
-    page
+
+    let interval_row_ref = interval_row.clone();
+    let radio_remote_ref = radio_remote.clone();
+    let radio_copy_ref = radio_copy.clone();
+    let collect = move |cfg: &mut AppConfig| {
+        cfg.sync.interval_seconds = interval_row_ref.value() as u64;
+        cfg.sync.conflict_resolution = if radio_remote_ref.is_active() {
+            ConflictResolution::RemoteWins
+        } else if radio_copy_ref.is_active() {
+            ConflictResolution::ConflictCopy
+        } else {
+            ConflictResolution::LocalWins
+        };
+    };
+
+    (page, collect)
 }
 
 fn build_notifications_page(
     config: &AppConfig,
-    config_path: PathBuf,
-    window: gtk4::Window,
-) -> libadwaita::PreferencesPage {
+) -> (
+    libadwaita::PreferencesPage,
+    impl Fn(&mut AppConfig) + Clone + 'static,
+) {
     let page = libadwaita::PreferencesPage::builder()
         .title("Notifications")
         .icon_name("notification-symbolic")
@@ -273,37 +338,26 @@ fn build_notifications_page(
     group.add(&conflict_row);
     group.add(&error_row);
 
-    let save_group = libadwaita::PreferencesGroup::new();
-    let save_row = libadwaita::ActionRow::builder()
-        .title("Save")
-        .activatable(true)
-        .build();
+    page.add(&group);
+
     let success_ref = success_row.clone();
     let conflict_ref = conflict_row.clone();
     let error_ref = error_row.clone();
-    save_row.connect_activated(move |_| {
-        let store = ConfigStore::new(config_path.clone());
-        let mut cfg = store.load_or_default().unwrap_or_default();
+    let collect = move |cfg: &mut AppConfig| {
         cfg.notifications.show_success = success_ref.is_active();
         cfg.notifications.show_conflicts = conflict_ref.is_active();
         cfg.notifications.show_errors = error_ref.is_active();
-        if let Err(e) = store.save(&cfg) {
-            error!("failed to save notification config: {e}");
-            show_error_toast(&window, &format!("Failed to save: {e}"));
-        }
-    });
-    save_group.add(&save_row);
+    };
 
-    page.add(&group);
-    page.add(&save_group);
-    page
+    (page, collect)
 }
 
 fn build_account_page(
     config: &AppConfig,
-    config_path: PathBuf,
-    window: gtk4::Window,
-) -> libadwaita::PreferencesPage {
+) -> (
+    libadwaita::PreferencesPage,
+    impl Fn(&mut AppConfig) + Clone + 'static,
+) {
     let page = libadwaita::PreferencesPage::builder()
         .title("Account")
         .icon_name("system-users-symbolic")
@@ -331,7 +385,6 @@ fn build_account_page(
         .activatable(true)
         .build();
 
-    let window_for_closure = window.clone();
     logout_row.connect_activated(move |_| {
         let dialog = libadwaita::AlertDialog::builder()
             .heading("Log out?")
@@ -345,21 +398,17 @@ fn build_account_page(
         dialog.add_response("cancel", "Cancel");
         dialog.add_response("logout", "Log Out");
         dialog.set_response_appearance("logout", libadwaita::ResponseAppearance::Destructive);
-
-        let config_path_inner = config_path.clone();
-        let window_inner = window_for_closure.clone();
-        dialog.connect_response(None, move |_, response| {
-            if response == "logout" {
-                do_logout(&config_path_inner, &window_inner);
-            }
-        });
-        dialog.present(Some(&window_for_closure));
+        dialog.connect_response(None, move |_, _response| {});
+        dialog.present(None::<&gtk4::Window>);
     });
 
     logout_group.add(&logout_row);
     page.add(&group);
     page.add(&logout_group);
-    page
+
+    let collect = move |_cfg: &mut AppConfig| {};
+
+    (page, collect)
 }
 
 fn show_error_toast(window: &gtk4::Window, message: &str) {
@@ -373,22 +422,4 @@ fn show_error_toast(window: &gtk4::Window, message: &str) {
             .build();
         overlay.add_toast(toast);
     }
-}
-
-fn do_logout(config_path: &PathBuf, _window: &gtk4::Window) {
-    let token_dir = config_path
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
-
-    // Remove .token-* files written by FileSecretStore.
-    if let Ok(entries) = std::fs::read_dir(&token_dir) {
-        for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().starts_with(".token-") {
-                let _ = std::fs::remove_file(entry.path());
-            }
-        }
-    }
-    // GNOME Keyring tokens are cleared via the `--login` CLI flow; clearing
-    // them here would require an async D-Bus call outside a tokio context.
 }

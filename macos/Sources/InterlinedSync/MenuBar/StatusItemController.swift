@@ -8,6 +8,7 @@ final class StatusItemController: NSObject {
     private let preferences: PreferencesManager
     private let state: SyncState
     private let coordinator: SyncCoordinating?
+    private let preferencesViewModel: PreferencesViewModel?
     private var preferencesWindow: NSWindow?
     private var cancellables: Set<AnyCancellable> = []
 
@@ -26,12 +27,14 @@ final class StatusItemController: NSObject {
         presenter: StatusItemPresenting,
         preferences: PreferencesManager,
         state: SyncState,
-        coordinator: SyncCoordinating? = nil
+        coordinator: SyncCoordinating? = nil,
+        preferencesViewModel: PreferencesViewModel? = nil
     ) {
         self.presenter = presenter
         self.preferences = preferences
         self.state = state
         self.coordinator = coordinator
+        self.preferencesViewModel = preferencesViewModel
         super.init()
 
         configureMenu()
@@ -165,15 +168,17 @@ final class StatusItemController: NSObject {
     }
 
     @objc private func openPreferences() {
+        guard let preferencesViewModel else { return }
+
         if preferencesWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 480, height: 320),
+                contentRect: NSRect(x: 0, y: 0, width: 480, height: 360),
                 styleMask: [.titled, .closable],
                 backing: .buffered,
                 defer: false
             )
             window.title = "Preferences"
-            window.contentView = NSHostingView(rootView: PreferencesView(preferences: preferences))
+            window.contentView = NSHostingView(rootView: PreferencesView(model: preferencesViewModel))
             window.center()
             window.isReleasedWhenClosed = false
             preferencesWindow = window

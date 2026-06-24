@@ -66,4 +66,12 @@ final class SyncState: ObservableObject {
             status = .idle
         }
     }
+
+    func resetSyncMarker() {
+        lastSyncedAt = nil
+        errorMessage = nil
+        if case .error = status {
+            status = .idle
+        }
+    }
 }

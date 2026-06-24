@@ -131,6 +131,7 @@ public static class Program
 
         services.AddSingleton<IFileMapper, FileMapper>();
         services.AddSingleton<IFileWatcher, FileSystemWatcherService>();
+        services.AddSingleton<IConflictResolver, ConflictResolver>();
 
         services.AddTransient<BearerTokenHandler>();
         services.AddHttpClient<IInterlinedListClient, InterlinedListClient>()

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.IO;
 using System.IO.Abstractions;
 using System.Security.Cryptography;
@@ -12,29 +13,20 @@ using Microsoft.Extensions.Options;
 
 namespace InterlinedSync.Sync;
 
-/// <summary>
-/// Bidirectional sync engine. Runs as a background <see cref="IHostedService"/>:
-/// a poll loop pulls server state on an interval, and a watcher loop pushes
-/// local file changes to the server. Pull and push are serialized through a
-/// single <see cref="SemaphoreSlim"/> so they never collide on the same record.
-/// </summary>
-/// <remarks>
-/// Cross-platform — depends only on <see cref="IInterlinedListClient"/>,
-/// <see cref="ISyncStateRepository"/>, <see cref="IFileMapper"/>,
-/// <see cref="IFileSystem"/>, and <see cref="IFileWatcher"/> — so it can be
-/// exercised in unit tests on macOS or Linux without WPF or Windows APIs.
-/// </remarks>
 public sealed class SyncEngine : BackgroundService
 {
+    private const string PullLockKey = "__pull__";
+
     private readonly IInterlinedListClient _client;
     private readonly ISyncStateRepository _repository;
     private readonly IFileMapper _fileMapper;
     private readonly ISyncStateNotifier _notifier;
     private readonly IFileSystem _fileSystem;
     private readonly IFileWatcher _fileWatcher;
+    private readonly IConflictResolver _conflictResolver;
     private readonly IOptionsMonitor<SyncPreferences> _preferences;
     private readonly ILogger<SyncEngine> _logger;
-    private readonly SemaphoreSlim _syncGate = new(1, 1);
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new(StringComparer.OrdinalIgnoreCase);
 
     public SyncEngine(
         IInterlinedListClient client,
@@ -43,6 +35,7 @@ public sealed class SyncEngine : BackgroundService
         ISyncStateNotifier notifier,
         IFileSystem fileSystem,
         IFileWatcher fileWatcher,
+        IConflictResolver conflictResolver,
         IOptionsMonitor<SyncPreferences> preferences,
         ILogger<SyncEngine> logger)
     {
@@ -52,6 +45,7 @@ public sealed class SyncEngine : BackgroundService
         _notifier = notifier;
         _fileSystem = fileSystem;
         _fileWatcher = fileWatcher;
+        _conflictResolver = conflictResolver;
         _preferences = preferences;
         _logger = logger;
     }
@@ -69,7 +63,8 @@ public sealed class SyncEngine : BackgroundService
             return SyncCycleResult.ForSkipped("sync folder not configured");
         }
 
-        await _syncGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        var gate = GetLock(PullLockKey);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
             _notifier.SetState(SyncState.Syncing);
@@ -140,24 +135,21 @@ public sealed class SyncEngine : BackgroundService
         }
         finally
         {
-            _syncGate.Release();
+            gate.Release();
         }
     }
 
-    /// <summary>
-    /// Pushes a single local change to the server. Exposed for unit tests; in
-    /// production this is called by <see cref="ExecuteAsync"/> as it drains the
-    /// watcher's channel.
-    /// </summary>
     public async Task<PushResult> PushOnceAsync(LocalChange change, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(change);
 
-        await _syncGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        await _repository.InitializeAsync(cancellationToken).ConfigureAwait(false);
+
+        var lockKey = await ResolveLockKeyAsync(change, cancellationToken).ConfigureAwait(false);
+        var gate = GetLock(lockKey);
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await _repository.InitializeAsync(cancellationToken).ConfigureAwait(false);
-
             _notifier.SetState(SyncState.Syncing);
             try
             {
@@ -196,8 +188,31 @@ public sealed class SyncEngine : BackgroundService
         }
         finally
         {
-            _syncGate.Release();
+            gate.Release();
         }
+    }
+
+    private SemaphoreSlim GetLock(string key) =>
+        _locks.GetOrAdd(key, _ => new SemaphoreSlim(1, 1));
+
+    private async Task<string> ResolveLockKeyAsync(LocalChange change, CancellationToken cancellationToken)
+    {
+        var existing = await _repository.GetByPathAsync(change.Path, cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
+        {
+            return existing.Id;
+        }
+
+        if (!string.IsNullOrEmpty(change.OldPath))
+        {
+            var renamed = await _repository.GetByPathAsync(change.OldPath, cancellationToken).ConfigureAwait(false);
+            if (renamed is not null)
+            {
+                return renamed.Id;
+            }
+        }
+
+        return "path:" + change.Path;
     }
 
     /// <inheritdoc />
@@ -466,6 +481,33 @@ public sealed class SyncEngine : BackgroundService
             return PushResult.ForSkipped("hash unchanged");
         }
 
+        Document remote;
+        try
+        {
+            remote = await _client.GetDocumentAsync(existing.Id, cancellationToken).ConfigureAwait(false);
+        }
+        catch (ApiException ex)
+        {
+            _logger.LogWarning(ex, "Could not fetch remote {DocumentId} for conflict check; proceeding with PATCH.", existing.Id);
+            return await PushUpdateAsync(existing, title, content, sha, path, cancellationToken).ConfigureAwait(false);
+        }
+
+        if (remote.UpdatedAt > existing.ServerUpdatedAt)
+        {
+            return await ApplyConflictAsync(existing, bytes, remote, cancellationToken).ConfigureAwait(false);
+        }
+
+        return await PushUpdateAsync(existing, title, content, sha, path, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<PushResult> PushUpdateAsync(
+        SyncStateRecord existing,
+        string title,
+        string content,
+        string sha,
+        string path,
+        CancellationToken cancellationToken)
+    {
         var updated = await _client.UpdateDocumentAsync(existing.Id, title, content, cancellationToken).ConfigureAwait(false);
         var localModifiedAt = _fileSystem.File.GetLastWriteTimeUtc(path);
         var refreshed = existing with
@@ -476,6 +518,36 @@ public sealed class SyncEngine : BackgroundService
         };
         await _repository.UpsertDocumentAsync(refreshed, cancellationToken).ConfigureAwait(false);
         return PushResult.ForUpdated(existing.Id);
+    }
+
+    private async Task<PushResult> ApplyConflictAsync(
+        SyncStateRecord existing,
+        byte[] localBytes,
+        Document remote,
+        CancellationToken cancellationToken)
+    {
+        var decision = await _conflictResolver.ResolveConflictAsync(existing, localBytes, remote, cancellationToken).ConfigureAwait(false);
+
+        var canonicalPath = _fileMapper.GetLocalPath(
+            _fileSystem.Path.GetDirectoryName(existing.LocalPath) ?? string.Empty,
+            remote.Title);
+
+        await WriteDocumentAsync(remote, canonicalPath, cancellationToken).ConfigureAwait(false);
+
+        if (!string.Equals(existing.LocalPath, canonicalPath, StringComparison.OrdinalIgnoreCase)
+            && _fileSystem.File.Exists(existing.LocalPath))
+        {
+            TryDelete(existing.LocalPath);
+        }
+
+        var stored = await _repository.GetByIdAsync(existing.Id, cancellationToken).ConfigureAwait(false);
+        if (stored is not null)
+        {
+            var stamped = stored with { LastConflictAt = DateTimeOffset.UtcNow };
+            await _repository.UpsertDocumentAsync(stamped, cancellationToken).ConfigureAwait(false);
+        }
+
+        return PushResult.ForConflict(existing.Id, decision.ConflictCopyPath);
     }
 
     private async Task<PushResult> PushDeleteAsync(string path, CancellationToken cancellationToken)
@@ -551,11 +623,13 @@ public sealed record SyncCycleResult(int Downloaded, int Updated, int Deleted, b
 /// <summary>
 /// Outcome of pushing a single <see cref="LocalChange"/> to the server.
 /// </summary>
-public sealed record PushResult(string Action, string? DocumentId, bool Skipped, string? Error)
+public sealed record PushResult(string Action, string? DocumentId, bool Skipped, string? Error, string? ConflictCopyPath = null)
 {
     public static PushResult ForCreated(string id) => new("created", id, false, null);
     public static PushResult ForUpdated(string id) => new("updated", id, false, null);
     public static PushResult ForDeleted(string id) => new("deleted", id, false, null);
     public static PushResult ForSkipped(string reason) => new("skipped", null, true, reason);
     public static PushResult ForFailure(string error) => new("error", null, false, error);
+    public static PushResult ForConflict(string id, string? conflictCopyPath) =>
+        new("conflict", id, false, null, conflictCopyPath);
 }

@@ -3,17 +3,49 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
+use async_trait::async_trait;
 use chrono::Utc;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, watch, Notify};
 use tracing::{debug, error, info, warn};
 
 use api_client::{ApiClientTrait, CreateDocumentRequest, DocumentDelta, UpdateDocumentRequest};
 use config_store::{AppConfig, ConflictResolution};
 use file_watcher::FileEvent;
 use notifier::{Notification, Notifier};
-use state_store::{PendingOp, StateStore};
+use state_store::{OpKind, PendingOp, QueuedOp, StateStore};
+
+const QUEUE_DRAIN_BATCH: usize = 50;
+
+#[async_trait]
+pub trait NetworkMonitor: Send + Sync {
+    async fn wait_for_reconnect(&self);
+}
+
+pub struct StubNetworkMonitor {
+    pub reconnect_signal: Arc<Notify>,
+}
+
+#[async_trait]
+impl NetworkMonitor for StubNetworkMonitor {
+    async fn wait_for_reconnect(&self) {
+        self.reconnect_signal.notified().await;
+    }
+}
+
+impl Default for StubNetworkMonitor {
+    fn default() -> Self {
+        Self {
+            reconnect_signal: Arc::new(Notify::new()),
+        }
+    }
+}
+
+#[cfg(all(target_os = "linux", feature = "network-monitor"))]
+pub mod nm_monitor;
+#[cfg(all(target_os = "linux", feature = "network-monitor"))]
+pub use nm_monitor::NetworkManagerMonitor;
 
 #[derive(Debug, Error)]
 pub enum SyncError {
@@ -45,6 +77,7 @@ pub struct SyncEngine {
     status_tx: watch::Sender<SyncStatus>,
     status_rx: watch::Receiver<SyncStatus>,
     paused: Arc<tokio::sync::RwLock<bool>>,
+    network_monitor: Arc<dyn NetworkMonitor>,
 }
 
 impl SyncEngine {
@@ -55,6 +88,26 @@ impl SyncEngine {
         state: Arc<StateStore>,
         notifier: Arc<dyn Notifier>,
         file_events: mpsc::Receiver<FileEvent>,
+    ) -> Self {
+        Self::with_network_monitor(
+            config,
+            account,
+            api,
+            state,
+            notifier,
+            file_events,
+            Arc::new(StubNetworkMonitor::default()),
+        )
+    }
+
+    pub fn with_network_monitor(
+        config: AppConfig,
+        account: impl Into<String>,
+        api: Arc<dyn ApiClientTrait>,
+        state: Arc<StateStore>,
+        notifier: Arc<dyn Notifier>,
+        file_events: mpsc::Receiver<FileEvent>,
+        network_monitor: Arc<dyn NetworkMonitor>,
     ) -> Self {
         let (status_tx, status_rx) = watch::channel(SyncStatus::Idle);
         Self {
@@ -67,6 +120,7 @@ impl SyncEngine {
             status_tx,
             status_rx,
             paused: Arc::new(tokio::sync::RwLock::new(false)),
+            network_monitor,
         }
     }
 
@@ -86,6 +140,9 @@ impl SyncEngine {
 
         info!("sync engine started for account {}", self.account);
 
+        // Drain any ops queued while offline before processing new events.
+        self.drain_queue().await;
+
         loop {
             tokio::select! {
                 Some(event) = self.file_events.recv() => {
@@ -102,6 +159,7 @@ impl SyncEngine {
                     if *self.paused.read().await {
                         continue;
                     }
+                    self.drain_queue().await;
                     if let Err(e) = self.poll_remote().await {
                         error!("remote poll failed: {e}");
                         self.set_status(SyncStatus::Error(e.to_string())).await;
@@ -113,11 +171,73 @@ impl SyncEngine {
                         continue;
                     }
                     info!("manual sync triggered from tray");
+                    self.drain_queue().await;
                     if let Err(e) = self.poll_remote().await {
                         error!("manual poll failed: {e}");
                         self.set_status(SyncStatus::Error(e.to_string())).await;
                     }
                 }
+                _ = self.network_monitor.wait_for_reconnect() => {
+                    info!("network reconnected — draining offline queue");
+                    self.drain_queue().await;
+                }
+            }
+        }
+    }
+
+    async fn drain_queue(&self) {
+        let ops = match self.state.peek_pending_ops(QUEUE_DRAIN_BATCH) {
+            Ok(ops) => ops,
+            Err(e) => {
+                error!("failed to read offline queue: {e}");
+                return;
+            }
+        };
+
+        for op in ops {
+            let result = self.replay_queued_op(&op).await;
+            match result {
+                Ok(()) => {
+                    if let Err(e) = self.state.mark_op_done(op.id) {
+                        error!("failed to mark queued op {} done: {e}", op.id);
+                    } else {
+                        debug!("drained queued op {} ({:?})", op.id, op.op_kind);
+                    }
+                }
+                Err(e) => {
+                    warn!("queued op {} failed (retry {}): {e}", op.id, op.retry_count);
+                    let _ = self.state.mark_op_failed(op.id, &e.to_string());
+                }
+            }
+        }
+    }
+
+    async fn replay_queued_op(&self, op: &QueuedOp) -> Result<(), SyncError> {
+        match op.op_kind {
+            OpKind::Upload => {
+                let path_str = op
+                    .payload
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let path = PathBuf::from(path_str);
+                self.upload_if_changed(&path).await
+            }
+            OpKind::Delete => {
+                let path_str = op
+                    .payload
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                self.delete_remote(&PathBuf::from(path_str)).await
+            }
+            OpKind::Rename => {
+                let path_str = op
+                    .payload
+                    .get("new_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                self.upload_if_changed(&PathBuf::from(path_str)).await
             }
         }
     }
@@ -201,9 +321,16 @@ impl SyncEngine {
                 Ok(())
             }
             Err(e) => {
-                // Ensure a record exists before setting pending_op.
                 let _ = self.state.upsert(path, None, Some(&hash));
                 self.state.set_pending_op(path, &PendingOp::Upload)?;
+                let queued_op = QueuedOp::new(
+                    OpKind::Upload,
+                    None,
+                    serde_json::json!({"path": path.to_string_lossy()}),
+                );
+                if let Err(qe) = self.state.enqueue_op(&queued_op) {
+                    error!("failed to enqueue offline upload op: {qe}");
+                }
                 Err(SyncError::Api(e))
             }
         }
@@ -356,6 +483,24 @@ impl SyncEngine {
 
             if has_local_unsaved_change {
                 match self.config.sync.conflict_resolution {
+                    ConflictResolution::LocalWins => {
+                        warn!(
+                            "conflict on {} — local wins, skipping remote write",
+                            path.display()
+                        );
+                        if self.config.notifications.show_conflicts {
+                            let _ = self
+                                .notifier
+                                .notify(Notification::normal(format!(
+                                    "Conflict in {} — local version kept",
+                                    path.file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or("document")
+                                )))
+                                .await;
+                        }
+                        return Ok(());
+                    }
                     ConflictResolution::RemoteWins => {
                         warn!("conflict on {} — remote wins", path.display());
                         if self.config.notifications.show_conflicts {
@@ -606,6 +751,176 @@ mod tests {
 
         let content = std::fs::read_to_string(&local_path).unwrap();
         assert_eq!(content, "# remote content");
+    }
+
+    #[tokio::test]
+    async fn failed_push_enqueues_op() {
+        let dir = TempDir::new().unwrap();
+        let md_file = dir.path().join("note.md");
+        std::fs::write(&md_file, "# Hello").unwrap();
+
+        let api = Arc::new(MockApiClient::new());
+        api.fail_once(api_client::ApiError::Server {
+            status: 503,
+            body: "unavailable".into(),
+        });
+
+        let state = make_state(&dir);
+        let (_, rx) = mpsc::channel(8);
+        let engine = make_engine(make_config(dir.path()), api, state.clone(), rx);
+
+        let _ = engine.upload_if_changed(&md_file).await;
+
+        let queued = state.peek_pending_ops(10).unwrap();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].op_kind, state_store::OpKind::Upload);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn drain_replays_pending_uploads() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let dir = TempDir::new().unwrap();
+                let watch_dir = dir.path().to_path_buf();
+                let md_file = watch_dir.join("queued.md");
+                std::fs::write(&md_file, "# Queued").unwrap();
+
+                let api = Arc::new(MockApiClient::new());
+                let state = make_state(&dir);
+
+                let queued_op = state_store::QueuedOp::new(
+                    state_store::OpKind::Upload,
+                    None,
+                    serde_json::json!({"path": md_file.to_string_lossy()}),
+                );
+                state.enqueue_op(&queued_op).unwrap();
+
+                let (_, rx) = mpsc::channel(8);
+                let engine = make_engine(make_config(&watch_dir), api.clone(), state.clone(), rx);
+
+                engine.drain_queue().await;
+
+                let docs = api.list_documents("test@example.com").await.unwrap();
+                assert_eq!(docs.len(), 1, "queued upload should have been replayed");
+
+                let remaining = state.peek_pending_ops(10).unwrap();
+                assert!(
+                    remaining.is_empty(),
+                    "successful replay should remove op from queue"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn network_reconnect_triggers_drain() {
+        let local = tokio::task::LocalSet::new();
+        local
+            .run_until(async {
+                let dir = TempDir::new().unwrap();
+                let watch_dir = dir.path().to_path_buf();
+                let md_file = watch_dir.join("offline.md");
+                std::fs::write(&md_file, "# Offline doc").unwrap();
+
+                let api = Arc::new(MockApiClient::new());
+                let state = make_state(&dir);
+
+                let queued_op = state_store::QueuedOp::new(
+                    state_store::OpKind::Upload,
+                    None,
+                    serde_json::json!({"path": md_file.to_string_lossy()}),
+                );
+                state.enqueue_op(&queued_op).unwrap();
+
+                let reconnect_signal = Arc::new(tokio::sync::Notify::new());
+                let monitor = Arc::new(StubNetworkMonitor {
+                    reconnect_signal: reconnect_signal.clone(),
+                });
+
+                let (_, rx) = mpsc::channel(8);
+                let (sync_now_tx, sync_now_rx) = mpsc::channel::<()>(4);
+                let engine = SyncEngine::with_network_monitor(
+                    make_config(&watch_dir),
+                    "test@example.com",
+                    api.clone(),
+                    state.clone(),
+                    Arc::new(StubNotifier),
+                    rx,
+                    monitor,
+                );
+                let status_rx = engine.status_receiver();
+
+                let engine_handle = tokio::task::spawn_local(async move {
+                    let _ = engine.run(sync_now_rx).await;
+                });
+
+                reconnect_signal.notify_one();
+
+                let mut rx = status_rx;
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        rx.changed().await.unwrap();
+                        if *rx.borrow() == SyncStatus::Idle {
+                            break;
+                        }
+                    }
+                })
+                .await
+                .expect("engine did not reach Idle within 5 s");
+
+                engine_handle.abort();
+                drop(sync_now_tx);
+
+                let docs = api.list_documents("test@example.com").await.unwrap();
+                assert_eq!(
+                    docs.len(),
+                    1,
+                    "reconnect should have triggered queue drain and upload"
+                );
+            })
+            .await;
+    }
+
+    #[tokio::test]
+    async fn local_wins_keeps_local_file_unchanged() {
+        let dir = TempDir::new().unwrap();
+        let watch_dir = dir.path().to_path_buf();
+
+        let mut config = make_config(&watch_dir);
+        config.sync.conflict_resolution = ConflictResolution::LocalWins;
+
+        let api = Arc::new(MockApiClient::new());
+        let state = make_state(&dir);
+        let (_, rx) = mpsc::channel(8);
+        let engine = make_engine(config, api.clone(), state.clone(), rx);
+
+        let local_path = watch_dir.join("report.md");
+        std::fs::write(&local_path, "# local unsaved change").unwrap();
+        state
+            .upsert(&local_path, Some("srv-1"), Some("old-hash"))
+            .unwrap();
+
+        engine
+            .write_document_atomic(&local_path, "# remote content", "srv-1")
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&local_path).unwrap();
+        assert_eq!(
+            content, "# local unsaved change",
+            "local-wins must not overwrite local file"
+        );
+
+        let entries: Vec<_> = std::fs::read_dir(&watch_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains("conflict"))
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "local-wins must not create a conflict copy"
+        );
     }
 
     #[tokio::test]

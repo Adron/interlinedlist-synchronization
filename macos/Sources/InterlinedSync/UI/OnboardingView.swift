@@ -72,6 +72,7 @@ struct OnboardingView: View {
             defer { isSigningIn = false }
             do {
                 _ = try await authManager.login(email: email, password: password)
+                preferences.accountEmail = email
                 isSignedIn = true
             } catch AuthError.invalidCredentials {
                 errorMessage = "Incorrect email or password."

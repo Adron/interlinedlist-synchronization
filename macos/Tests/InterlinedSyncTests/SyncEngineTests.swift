@@ -1,3 +1,4 @@
+import Combine
 import XCTest
 @testable import InterlinedSync
 
@@ -251,6 +252,35 @@ final class SyncEngineTests: XCTestCase {
         await engine.syncNow()
 
         XCTAssertTrue(center.addedTitles.contains("Sync failed"))
+    }
+
+    // MARK: - Hot-reload interval
+
+    func testSyncEngine_pickUpNewIntervalLive() async throws {
+        let engine = makeEngine()
+        await engine.updatePollInterval(45)
+        let initial = await engine.currentPollInterval
+        XCTAssertEqual(initial, 45)
+
+        let subject = CurrentValueSubject<TimeInterval, Never>(45)
+        await engine.bindPollInterval(to: subject.eraseToAnyPublisher())
+        subject.send(120)
+
+        try await pollUntil { await engine.currentPollInterval == 120 }
+        let updated = await engine.currentPollInterval
+        XCTAssertEqual(updated, 120, "Engine should adopt the new interval pushed through the publisher")
+    }
+
+    private func pollUntil(
+        timeout: TimeInterval = 2,
+        _ condition: @escaping () async -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if await condition() { return }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTFail("Condition not met before timeout")
     }
 
     // MARK: - Helpers

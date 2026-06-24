@@ -87,6 +87,37 @@ public sealed class FileMapperTests
     }
 
     [Fact]
+    public void GetConflictPath_AppendsTimestampedConflictSuffix()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "sync-root");
+        var original = Path.Combine(folder, "My Document.md");
+        var conflictAt = new DateTimeOffset(2026, 6, 22, 13, 45, 7, TimeSpan.Zero);
+
+        var path = Build().GetConflictPath(original, conflictAt);
+
+        path.Should().Be(Path.Combine(folder, "My Document.conflict-20260622T134507.md"));
+    }
+
+    [Fact]
+    public void GetConflictPath_NormalizesToUtc()
+    {
+        var folder = Path.Combine(Path.GetTempPath(), "sync-root");
+        var original = Path.Combine(folder, "Note.md");
+        var conflictAt = new DateTimeOffset(2026, 6, 22, 9, 0, 0, TimeSpan.FromHours(-4));
+
+        var path = Build().GetConflictPath(original, conflictAt);
+
+        path.Should().EndWith("Note.conflict-20260622T130000.md");
+    }
+
+    [Fact]
+    public void GetConflictPath_RejectsEmptyPath()
+    {
+        var act = () => Build().GetConflictPath(string.Empty, DateTimeOffset.UtcNow);
+        act.Should().Throw<ArgumentException>();
+    }
+
+    [Fact]
     public async Task GetPathForDocumentIdAsync_ReturnsNull_WhenMissing()
     {
         var repo = new Mock<ISyncStateRepository>();

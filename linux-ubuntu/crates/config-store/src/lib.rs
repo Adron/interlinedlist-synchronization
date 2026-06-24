@@ -33,6 +33,7 @@ pub struct SyncConfig {
 pub enum ConflictResolution {
     RemoteWins,
     ConflictCopy,
+    LocalWins,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -275,5 +276,19 @@ mod tests {
         cfg.network.max_retries = 0;
         let result = cfg.validate();
         assert!(matches!(result, Err(ConfigError::Validation(_))));
+    }
+
+    #[test]
+    fn local_wins_round_trips() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir);
+        let mut cfg = AppConfig::default();
+        cfg.sync.conflict_resolution = ConflictResolution::LocalWins;
+        store.save(&cfg).unwrap();
+        let loaded = store.load().unwrap();
+        assert_eq!(
+            loaded.sync.conflict_resolution,
+            ConflictResolution::LocalWins
+        );
     }
 }
