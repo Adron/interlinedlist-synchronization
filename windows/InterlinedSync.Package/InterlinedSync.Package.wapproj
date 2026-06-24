@@ -19,7 +19,7 @@
     <HoursBetweenUpdateChecks>0</HoursBetweenUpdateChecks>
     <EntryPointProjectUniqueName>..\InterlinedSync\InterlinedSync.csproj</EntryPointProjectUniqueName>
     <WapProjPath>$(MSBuildExtensionsPath)\Microsoft\DesktopBridge\</WapProjPath>
-    <TargetPlatformVersion>10.0.22621.0</TargetPlatformVersion>
+    <TargetPlatformVersion>10.0.19041.0</TargetPlatformVersion>
     <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
   </PropertyGroup>
 
