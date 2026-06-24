@@ -109,6 +109,78 @@ final class StatusItemControllerTests: XCTestCase {
         XCTAssertEqual(StatusItemController.iconDescriptor(for: .error("x")).symbolName, "exclamationmark.triangle")
     }
 
+    // MARK: - Signed-in state (default)
+
+    func testSignInItemDisabledWhenSignedIn() {
+        XCTAssertFalse(controller.signInMenuItem.isEnabled)
+    }
+
+    func testToolTipClearedWhenSignedIn() {
+        XCTAssertNil(presenter.lastToolTip)
+    }
+
+    // MARK: - Signed-out state
+
+    private func makeSignedOutController(onSignIn: (() -> Void)? = nil) -> (StatusItemController, MockStatusItemPresenter) {
+        let signedOutPresenter = MockStatusItemPresenter()
+        let signedOutController = StatusItemController(
+            presenter: signedOutPresenter,
+            preferences: preferences,
+            state: state,
+            isSignedIn: false,
+            onSignIn: onSignIn
+        )
+        return (signedOutController, signedOutPresenter)
+    }
+
+    func testSignedOutShowsWarningIconAndTooltip() {
+        let (_, signedOutPresenter) = makeSignedOutController()
+
+        XCTAssertEqual(signedOutPresenter.lastIcon?.symbolName, "exclamationmark.triangle")
+        XCTAssertEqual(signedOutPresenter.lastToolTip, "Sign in needed")
+    }
+
+    func testSignedOutEnablesSignInItem() {
+        let (signedOutController, _) = makeSignedOutController()
+
+        XCTAssertTrue(signedOutController.signInMenuItem.isEnabled)
+    }
+
+    func testSignedOutStatusLabelPromptsSignIn() {
+        let (signedOutController, _) = makeSignedOutController()
+
+        XCTAssertEqual(signedOutController.statusMenuItem.title, "Status: Sign in needed")
+    }
+
+    func testSignedOutDisablesSyncControls() {
+        let (signedOutController, _) = makeSignedOutController()
+
+        XCTAssertFalse(signedOutController.syncNowMenuItem.isEnabled)
+        XCTAssertFalse(signedOutController.pauseResumeMenuItem.isEnabled)
+    }
+
+    func testSignedOutKeepsWarningIconEvenWhenStatusChanges() {
+        let (signedOutController, signedOutPresenter) = makeSignedOutController()
+
+        signedOutController.render(status: .syncing, lastSyncedAt: nil)
+
+        XCTAssertEqual(signedOutPresenter.lastIcon?.symbolName, "exclamationmark.triangle")
+        XCTAssertEqual(signedOutController.statusMenuItem.title, "Status: Sign in needed")
+    }
+
+    func testSignInItemInvokesCallback() {
+        var signInCount = 0
+        let (signedOutController, _) = makeSignedOutController { signInCount += 1 }
+
+        _ = signedOutController.signInMenuItem.target?.perform(signedOutController.signInMenuItem.action, with: nil)
+
+        XCTAssertEqual(signInCount, 1)
+    }
+
+    func testSignedOutIconDescriptorSymbol() {
+        XCTAssertEqual(StatusItemController.signedOutIconDescriptor.symbolName, "exclamationmark.triangle")
+    }
+
     private func pumpMainRunLoop() async {
         for _ in 0..<3 {
             await Task.yield()
@@ -121,6 +193,7 @@ final class StatusItemControllerTests: XCTestCase {
 private final class MockStatusItemPresenter: StatusItemPresenting {
     private(set) var attachedMenu: NSMenu?
     private(set) var lastIcon: (symbolName: String, accessibilityDescription: String)?
+    private(set) var lastToolTip: String?
 
     func attach(menu: NSMenu) {
         attachedMenu = menu
@@ -128,6 +201,10 @@ private final class MockStatusItemPresenter: StatusItemPresenting {
 
     func setIcon(symbolName: String, accessibilityDescription: String) {
         lastIcon = (symbolName, accessibilityDescription)
+    }
+
+    func setToolTip(_ toolTip: String?) {
+        lastToolTip = toolTip
     }
 }
 

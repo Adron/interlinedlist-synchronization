@@ -6,6 +6,18 @@ protocol TokenStorage: Sendable {
     func delete(for account: String) throws
 }
 
+extension TokenStorage {
+    /// The single keychain account under which the sync session token is stored.
+    static var sessionTokenAccount: String { "session-token" }
+
+    /// Whether a non-empty session token is currently persisted. Used at launch to decide between
+    /// the signed-out (onboarding) path and the normal sync path without performing a network call.
+    func hasSessionToken() -> Bool {
+        guard let token = try? load(for: Self.sessionTokenAccount) else { return false }
+        return !token.isEmpty
+    }
+}
+
 enum AuthError: Error, Equatable {
     case invalidCredentials
     case networkError(Error)
@@ -56,7 +68,7 @@ actor AuthManager {
     }
 
     private static let loginPath = "/api/auth/sync-token"
-    private static let keychainAccount = "session-token"
+    private static let keychainAccount = KeychainManager.sessionTokenAccount
 
     private let baseURL: URL
     private let session: URLSession

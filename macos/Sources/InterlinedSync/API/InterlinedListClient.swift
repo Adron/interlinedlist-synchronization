@@ -16,7 +16,7 @@ actor InterlinedListClient: DocumentFetching, DocumentMutating {
     private let session: URLSession
     private let tokenStorage: TokenStorage
     private let decoder = JSONDecoder.interlinedList()
-    private static let keychainAccount = "session-token"
+    private static let keychainAccount = KeychainManager.sessionTokenAccount
     private static let isoFormatter = ISO8601DateFormatter()
 
     init(baseURL: URL, session: URLSession, tokenStorage: TokenStorage) {

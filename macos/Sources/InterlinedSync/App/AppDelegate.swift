@@ -44,10 +44,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
 
-        if !preferences.hasCompletedOnboarding {
-            presentOnboarding()
-        } else {
+        if keychain.hasSessionToken() && preferences.hasCompletedOnboarding {
             startSync()
+        } else {
+            presentOnboarding()
         }
     }
 
@@ -85,7 +85,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             preferences: preferences,
             state: syncState,
             coordinator: engine,
-            preferencesViewModel: preferencesViewModel
+            preferencesViewModel: preferencesViewModel,
+            isSignedIn: true
         )
 
         if preferences.syncEnabled {
@@ -113,8 +114,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItemController = StatusItemController(
             presenter: AppKitStatusItemPresenter(),
             preferences: preferences,
-            state: syncState
+            state: syncState,
+            isSignedIn: false,
+            onSignIn: { [weak self] in self?.showOnboardingWindow() }
         )
+
+        showOnboardingWindow()
+    }
+
+    private func showOnboardingWindow() {
+        if let onboardingWindow {
+            NSApp.activate(ignoringOtherApps: true)
+            onboardingWindow.makeKeyAndOrderFront(nil)
+            return
+        }
 
         let view = OnboardingView(authManager: authManager, preferences: preferences) { [weak self] in
             self?.onboardingWindow?.close()

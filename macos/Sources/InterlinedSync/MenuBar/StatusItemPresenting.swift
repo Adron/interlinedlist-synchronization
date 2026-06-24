@@ -7,6 +7,7 @@ import AppKit
 protocol StatusItemPresenting: AnyObject {
     func attach(menu: NSMenu)
     func setIcon(symbolName: String, accessibilityDescription: String)
+    func setToolTip(_ toolTip: String?)
 }
 
 @MainActor
@@ -32,5 +33,9 @@ final class AppKitStatusItemPresenter: StatusItemPresenting {
             button.image = image
             button.imageScaling = .scaleProportionallyDown
         }
+    }
+
+    func setToolTip(_ toolTip: String?) {
+        statusItem.button?.toolTip = toolTip
     }
 }

@@ -9,9 +9,12 @@ final class StatusItemController: NSObject {
     private let state: SyncState
     private let coordinator: SyncCoordinating?
     private let preferencesViewModel: PreferencesViewModel?
+    private let onSignIn: (() -> Void)?
+    private let isSignedIn: Bool
     private var preferencesWindow: NSWindow?
     private var cancellables: Set<AnyCancellable> = []
 
+    let signInMenuItem = NSMenuItem(title: "Sign In…", action: nil, keyEquivalent: "")
     let statusMenuItem = NSMenuItem(title: "Status: Idle", action: nil, keyEquivalent: "")
     let lastSyncedMenuItem = NSMenuItem(title: "Last synced: Never", action: nil, keyEquivalent: "")
     let syncNowMenuItem = NSMenuItem(title: "Sync Now", action: nil, keyEquivalent: "r")
@@ -28,13 +31,17 @@ final class StatusItemController: NSObject {
         preferences: PreferencesManager,
         state: SyncState,
         coordinator: SyncCoordinating? = nil,
-        preferencesViewModel: PreferencesViewModel? = nil
+        preferencesViewModel: PreferencesViewModel? = nil,
+        isSignedIn: Bool = true,
+        onSignIn: (() -> Void)? = nil
     ) {
         self.presenter = presenter
         self.preferences = preferences
         self.state = state
         self.coordinator = coordinator
         self.preferencesViewModel = preferencesViewModel
+        self.isSignedIn = isSignedIn
+        self.onSignIn = onSignIn
         super.init()
 
         configureMenu()
@@ -62,10 +69,18 @@ final class StatusItemController: NSObject {
 
     private func configureMenu() {
         let menu = NSMenu()
+        menu.autoenablesItems = false
 
         let titleItem = NSMenuItem(title: "InterlinedList Sync", action: nil, keyEquivalent: "")
         titleItem.isEnabled = false
         menu.addItem(titleItem)
+
+        menu.addItem(.separator())
+
+        signInMenuItem.target = self
+        signInMenuItem.action = #selector(presentSignIn)
+        signInMenuItem.isEnabled = !isSignedIn
+        menu.addItem(signInMenuItem)
 
         menu.addItem(.separator())
 
@@ -79,26 +94,38 @@ final class StatusItemController: NSObject {
 
         syncNowMenuItem.target = self
         syncNowMenuItem.action = #selector(syncNow)
+        syncNowMenuItem.isEnabled = isSignedIn
         menu.addItem(syncNowMenuItem)
 
         pauseResumeMenuItem.target = self
         pauseResumeMenuItem.action = #selector(togglePause)
+        pauseResumeMenuItem.isEnabled = isSignedIn
         menu.addItem(pauseResumeMenuItem)
 
         let prefsItem = NSMenuItem(title: "Preferences…", action: #selector(openPreferences), keyEquivalent: ",")
         prefsItem.target = self
+        prefsItem.isEnabled = isSignedIn
         menu.addItem(prefsItem)
 
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
         quitItem.target = self
+        quitItem.isEnabled = true
         menu.addItem(quitItem)
 
         presenter.attach(menu: menu)
     }
 
     func render(status: SyncStatus, lastSyncedAt: Date?) {
+        guard isSignedIn else {
+            statusMenuItem.title = "Status: Sign in needed"
+            lastSyncedMenuItem.title = "Last synced: \(lastSyncedDescription(lastSyncedAt))"
+            applyIcon(for: nil)
+            presenter.setToolTip("Sign in needed")
+            return
+        }
+
         statusMenuItem.title = "Status: \(Self.label(for: status))"
         lastSyncedMenuItem.title = "Last synced: \(lastSyncedDescription(lastSyncedAt))"
 
@@ -107,6 +134,7 @@ final class StatusItemController: NSObject {
         syncNowMenuItem.isEnabled = !isPaused && status != .syncing && status != .offline
 
         applyIcon(for: status)
+        presenter.setToolTip(nil)
     }
 
     private func lastSyncedDescription(_ date: Date?) -> String {
@@ -125,13 +153,17 @@ final class StatusItemController: NSObject {
         }
     }
 
-    private func applyIcon(for status: SyncStatus) {
-        let descriptor = Self.iconDescriptor(for: status)
+    /// Renders the icon for the given status, or the signed-out warning icon when `status` is nil.
+    private func applyIcon(for status: SyncStatus?) {
+        let descriptor = status.map(Self.iconDescriptor(for:)) ?? Self.signedOutIconDescriptor
         presenter.setIcon(
             symbolName: descriptor.symbolName,
             accessibilityDescription: descriptor.accessibility
         )
     }
+
+    static let signedOutIconDescriptor: (symbolName: String, accessibility: String) =
+        ("exclamationmark.triangle", "InterlinedList Sync — sign in needed")
 
     static func iconDescriptor(for status: SyncStatus) -> (symbolName: String, accessibility: String) {
         switch status {
@@ -148,6 +180,10 @@ final class StatusItemController: NSObject {
         case .error:
             return ("exclamationmark.triangle", "InterlinedList Sync — error")
         }
+    }
+
+    @objc private func presentSignIn() {
+        onSignIn?()
     }
 
     @objc private func syncNow() {
