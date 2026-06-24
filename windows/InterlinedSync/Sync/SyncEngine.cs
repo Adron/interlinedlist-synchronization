@@ -395,6 +395,14 @@ public sealed class SyncEngine : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Effective poll interval applied on the next pull loop iteration.
+    /// Reads <see cref="IOptionsMonitor{TOptions}.CurrentValue"/> on every call
+    /// so changes to <see cref="SyncPreferences.PollIntervalSeconds"/> take
+    /// effect on the next loop cycle (hot-reload).
+    /// </summary>
+    public TimeSpan CurrentPollInterval => GetPollInterval();
+
     private TimeSpan GetPollInterval()
     {
         var prefs = _preferences.CurrentValue;

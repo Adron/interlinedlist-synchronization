@@ -1,17 +1,21 @@
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using InterlinedSync.Auth;
+using InterlinedSync.Storage;
 using Microsoft.Extensions.Logging;
 
 namespace InterlinedSync.UI.ViewModels;
 
 /// <summary>
 /// ViewModel for the first-run sign-in window. Wraps <see cref="IAuthProvider"/>
-/// with observable properties so the WPF view can bind directly.
+/// with observable properties so the WPF view can bind directly. On a successful
+/// sign-in the entered email is persisted via <see cref="IAccountStore"/> so the
+/// Settings UI can display "Signed in as &lt;email&gt;".
 /// </summary>
 public sealed partial class OnboardingViewModel : ObservableObject
 {
     private readonly IAuthProvider _authProvider;
+    private readonly IAccountStore _accountStore;
     private readonly ILogger<OnboardingViewModel> _logger;
 
     [ObservableProperty]
@@ -31,16 +35,21 @@ public sealed partial class OnboardingViewModel : ObservableObject
     [ObservableProperty]
     private bool _signInSucceeded;
 
-    public OnboardingViewModel(IAuthProvider authProvider, ILogger<OnboardingViewModel> logger)
+    public OnboardingViewModel(
+        IAuthProvider authProvider,
+        IAccountStore accountStore,
+        ILogger<OnboardingViewModel> logger)
     {
         _authProvider = authProvider;
+        _accountStore = accountStore;
         _logger = logger;
     }
 
     public bool HasError => !string.IsNullOrEmpty(ErrorMessage);
 
     /// <summary>
-    /// Raised when sign-in succeeds so the hosting window can close itself.
+    /// Raised when sign-in succeeds so the hosting window can close itself
+    /// (and trigger the post-sign-in folder selection prompt).
     /// </summary>
     public event EventHandler? SignInCompleted;
 
@@ -54,6 +63,14 @@ public sealed partial class OnboardingViewModel : ObservableObject
             var ok = await _authProvider.SignInAsync(Username, Password, cancellationToken).ConfigureAwait(true);
             if (ok)
             {
+                try
+                {
+                    await _accountStore.SetSignedInEmailAsync(Username, cancellationToken).ConfigureAwait(true);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not persist signed-in email.");
+                }
                 SignInSucceeded = true;
                 SignInCompleted?.Invoke(this, EventArgs.Empty);
             }

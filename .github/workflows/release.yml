@@ -10,8 +10,36 @@ on:
 jobs:
 
   # ---------------------------------------------------------------------------
-  # macOS — unsigned .app bundle zipped for direct distribution
-  # Signed .pkg can be added once Developer ID credentials are in repo secrets.
+  # macOS — .app bundle + .pkg installer.
+  #
+  # The job runs in three modes depending on which repository secrets are set:
+  #
+  #   1. No signing secrets:
+  #      Produces UNSIGNED .app + UNSIGNED .pkg (current baseline behavior).
+  #
+  #   2. Code-signing secrets set (APPLE_DEVELOPER_ID_APPLICATION,
+  #      APPLE_CERTIFICATES_P12_BASE64, APPLE_CERTIFICATES_P12_PASSWORD):
+  #      Signs the .app with Hardened Runtime + entitlements; signs the .pkg
+  #      if APPLE_DEVELOPER_ID_INSTALLER is also set.
+  #
+  #   3. Above PLUS notarization secrets set (APPLE_ID,
+  #      APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID):
+  #      Submits to Apple notary service, waits, and staples.
+  #
+  # Required repository secrets for full signed+notarized distribution:
+  #
+  #   APPLE_DEVELOPER_ID_APPLICATION  Certificate common name, e.g.
+  #                                   "Developer ID Application: NAME (TEAMID)"
+  #   APPLE_DEVELOPER_ID_INSTALLER    Installer cert name, e.g.
+  #                                   "Developer ID Installer: NAME (TEAMID)"
+  #   APPLE_CERTIFICATES_P12_BASE64   Base64-encoded P12 containing both certs
+  #                                   and their private keys
+  #   APPLE_CERTIFICATES_P12_PASSWORD Password protecting the P12
+  #   APPLE_ID                        Apple ID email for notarytool
+  #   APPLE_APP_SPECIFIC_PASSWORD     App-specific password (appleid.apple.com)
+  #   APPLE_TEAM_ID                   10-character Apple Developer Team ID
+  #
+  # See macos/PACKAGING.md for how-to-obtain instructions.
   # ---------------------------------------------------------------------------
   build-macos:
     name: Build macOS
@@ -24,25 +52,66 @@ jobs:
         with:
           xcode-version: latest-stable
 
-      - name: Build .app bundle
-        run: bash macos/scripts/make-app.sh
+      - name: Detect signing secrets
+        id: signing
+        env:
+          P12_B64: ${{ secrets.APPLE_CERTIFICATES_P12_BASE64 }}
+        run: |
+          if [[ -n "${P12_B64:-}" ]]; then
+            echo "have_certs=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "have_certs=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import code-signing certificates
+        if: steps.signing.outputs.have_certs == 'true'
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATES_P12_BASE64 }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATES_P12_PASSWORD }}
+
+      - name: Build .app bundle (sign + notarize when secrets present)
+        env:
+          APPLE_DEVELOPER_ID_APPLICATION: ${{ secrets.APPLE_DEVELOPER_ID_APPLICATION }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: bash macos/scripts/build-app.sh
+
+      - name: Build .pkg installer (signed when installer cert present)
+        env:
+          APPLE_DEVELOPER_ID_INSTALLER: ${{ secrets.APPLE_DEVELOPER_ID_INSTALLER }}
+        run: bash macos/scripts/build-pkg.sh
 
       - name: Zip .app bundle
         run: |
           cd macos/build
           zip -r --symlinks "InterlinedSync-macOS-${{ github.ref_name }}.zip" InterlinedSync.app
 
-      - name: Upload macOS artifact
+      - name: Rename .pkg for release
+        run: |
+          cd macos/build
+          PKG_SRC="$(ls InterlinedSync-*.pkg | grep -v "macOS-${{ github.ref_name }}" | head -n 1 || true)"
+          if [[ -n "${PKG_SRC}" ]]; then
+            mv "${PKG_SRC}" "InterlinedSync-macOS-${{ github.ref_name }}.pkg"
+          fi
+
+      - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
           name: macos-release
-          path: macos/build/InterlinedSync-macOS-${{ github.ref_name }}.zip
+          path: |
+            macos/build/InterlinedSync-macOS-${{ github.ref_name }}.zip
+            macos/build/InterlinedSync-macOS-${{ github.ref_name }}.pkg
           if-no-files-found: error
           retention-days: 1
 
   # ---------------------------------------------------------------------------
   # Windows — framework-dependent publish (requires .NET 9 Desktop Runtime)
-  # MSIX packaging can be added once a code-signing cert is configured.
+  # plus an MSIX package built by InterlinedSync.Package.wapproj. The MSIX is
+  # signed when WINDOWS_CERT_PFX_BASE64 + WINDOWS_CERT_PASSWORD secrets exist;
+  # otherwise it ships UNSIGNED (sideload requires developer mode / sideload
+  # license). See windows/PACKAGING.md for the full signing checklist.
   # ---------------------------------------------------------------------------
   build-windows:
     name: Build Windows
@@ -54,6 +123,9 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '9.0.x'
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
 
       - name: Restore packages
         working-directory: windows
@@ -76,16 +148,73 @@ jobs:
             -Path windows/publish/* `
             -DestinationPath "InterlinedSync-Windows-${{ github.ref_name }}.zip"
 
-      - name: Upload Windows artifact
+      - name: Build MSIX package
+        working-directory: windows
+        shell: pwsh
+        run: |
+          msbuild InterlinedSync.Package\InterlinedSync.Package.wapproj `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:AppxBundle=Never `
+            /p:UapAppxPackageBuildMode=SideloadOnly `
+            /p:AppxPackageSigningEnabled=false
+
+      - name: Locate MSIX output
+        id: msix
+        shell: pwsh
+        run: |
+          $msix = Get-ChildItem -Path windows/InterlinedSync.Package/bin/x64/Release -Recurse -Filter "*.msix" | Select-Object -First 1
+          if (-not $msix) {
+            Write-Error "No .msix produced by InterlinedSync.Package.wapproj"
+            exit 1
+          }
+          $dest = "InterlinedSync-Windows-MSIX-${{ github.ref_name }}.msix"
+          Copy-Item -Path $msix.FullName -Destination $dest -Force
+          "msix_path=$dest" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Detect MSIX signing secrets
+        id: msix_signing
+        shell: pwsh
+        env:
+          PFX_B64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+        run: |
+          if ([string]::IsNullOrEmpty($env:PFX_B64)) {
+            "have_cert=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "have_cert=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+
+      - name: Sign MSIX (if cert available)
+        if: steps.msix_signing.outputs.have_cert == 'true'
+        shell: pwsh
+        env:
+          PFX_B64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+          PFX_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP "codesign.pfx"
+          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:PFX_B64))
+          $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter "signtool.exe" `
+                       | Where-Object { $_.FullName -match 'x64' } `
+                       | Select-Object -First 1).FullName
+          & $signtool sign /fd SHA256 /a /f $pfxPath /p $env:PFX_PASSWORD `
+            /tr http://timestamp.digicert.com /td SHA256 `
+            "${{ steps.msix.outputs.msix_path }}"
+          Remove-Item $pfxPath -Force
+
+      - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-release
-          path: InterlinedSync-Windows-${{ github.ref_name }}.zip
+          path: |
+            InterlinedSync-Windows-${{ github.ref_name }}.zip
+            InterlinedSync-Windows-MSIX-${{ github.ref_name }}.msix
           if-no-files-found: error
           retention-days: 1
 
   # ---------------------------------------------------------------------------
-  # Linux — .deb package (via cargo-deb) + standalone binary tarball
+  # Linux — .deb package (via cargo-deb) + standalone binary tarball + .snap
+  # Snap build uses snapcraft with --destructive-mode (no LXD in GitHub runners).
+  # Publishing to the Snap Store is a separate manual step — see PACKAGING.md.
   # ---------------------------------------------------------------------------
   build-linux:
     name: Build Linux
@@ -126,6 +255,25 @@ jobs:
           tar -czf "linux-ubuntu/InterlinedSync-Linux-${{ github.ref_name }}.tar.gz" \
             -C linux-ubuntu/target/release interlinedlist-sync
 
+      # -------------------------------------------------------------------
+      # Snap packaging — M7
+      # snapcraft --destructive-mode builds directly on the runner without
+      # spawning LXD or Multipass (both require nested virtualisation that
+      # GitHub-hosted runners do not provide).
+      # The resulting .snap is unsigned; the Store signs it on upload.
+      # -------------------------------------------------------------------
+      - name: Install snapcraft
+        run: sudo snap install snapcraft --classic
+
+      - name: Build snap
+        working-directory: linux-ubuntu
+        run: snapcraft --destructive-mode
+        # Produces: linux-ubuntu/interlinedlist-sync_0.1.0_amd64.snap
+        # Note: to publish to the Snap Store after this job completes,
+        # run from a maintainer machine:
+        #   snapcraft upload --release=stable interlinedlist-sync_*.snap
+        # This requires SNAPCRAFT_STORE_CREDENTIALS — see PACKAGING.md.
+
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -133,6 +281,7 @@ jobs:
           path: |
             linux-ubuntu/target/debian/*.deb
             linux-ubuntu/InterlinedSync-Linux-${{ github.ref_name }}.tar.gz
+            linux-ubuntu/*.snap
           if-no-files-found: error
           retention-days: 1
 
@@ -171,6 +320,7 @@ jobs:
           | macOS 13 Ventura or later | \`InterlinedSync-macOS-${TAG}.zip\` | Unzip and move to \`/Applications\`. Unsigned — right-click → Open to bypass Gatekeeper on first launch. |
           | Windows 10 / 11 (x64) | \`InterlinedSync-Windows-${TAG}.zip\` | Unzip and run \`InterlinedSync.exe\`. Requires [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0). |
           | Ubuntu / Debian (amd64) | \`interlinedlist-sync_*.deb\` | \`sudo dpkg -i interlinedlist-sync_*.deb\` |
+          | Ubuntu Snap (amd64) | \`interlinedlist-sync_*.snap\` | \`sudo snap install --classic --dangerous interlinedlist-sync_*.snap\` (unsigned local install; use the Snap Store once published) |
           | Linux standalone binary | \`InterlinedSync-Linux-${TAG}.tar.gz\` | Extract and place \`interlinedlist-sync\` in your \`\$PATH\`. |
 
           ### First-time setup

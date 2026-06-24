@@ -1,63 +1,100 @@
-# Next Steps — Phase 7 (Settings UI)
+# Next Steps — Post-Phase 8
 
-Phase 6 (Notifications + Error Handling) shipped: a typed `INotificationManager`
-fronted by a one-method `INotificationDispatcher` seam, an `INetworkMonitor`
-that pauses the engine on offline / resumes on reconnect, typed
-`AuthExpiredException` / `RateLimitedException` thrown from
-`InterlinedListClient`, and a `Retry-After`-aware in-engine backoff loop.
+Phases 1–8 have shipped. The Windows app now has:
 
-## Phase 6 — done
+- A working sync engine with bidirectional push/pull, conflict copies,
+  rate-limit backoff, network-aware pause/resume, and auth-expired pause.
+- 165 unit tests + 5 (skipped, live) integration tests, all green.
+- A four-tab Settings window (General, Account, Notifications, Advanced)
+  backed by `SettingsViewModel`, an HKCU-Run `RegistryAutoStartManager`, a
+  JSON-backed `AccountStore` for the signed-in email, and a state-reset
+  affordance plumbed through `ISyncStateRepository.ResetAsync`.
+- An MSIX packaging project (`InterlinedSync.Package.wapproj`) that produces
+  a `.msix` from CI, with conditional `signtool` signing wired behind two
+  GitHub Actions secrets.
 
-- `Notifications/INotificationManager.cs` + `WindowsAppNotificationManager.cs`
-  with action labels for "Open Folder" / "Retry" / "Open Log" / "Open File" /
-  "Sign In". `LoggingNotificationDispatcher` is the cross-platform fallback;
-  the Windows App SDK dispatcher will replace it once the
-  `Microsoft.WindowsAppSDK` package is wired in (sparse package or MSIX).
-- `Notifications/Mocks/MockNotificationManager.cs` — records every call for
-  test assertions.
-- `Network/INetworkMonitor.cs` + `NetworkInformationMonitor.cs` (wraps
-  `System.Net.NetworkInformation.NetworkChange`; on Windows the production
-  monitor will additionally subscribe to
-  `Windows.Networking.Connectivity.NetworkInformation.NetworkStatusChanged`
-  once the WinRT projection is enabled).
-- `Errors/AuthExpiredException.cs` + `RateLimitedException.cs` (both extend
-  `ApiException`; `ApiException` is no longer `sealed`).
-- `Sync/SyncState.cs` — added `Offline` and `AuthExpired`.
-- `Sync/SyncEngine.cs` — pause/resume gates, notification fan-out, in-engine
-  retry-with-jitter for 429, `ResumeAfterReauth()` for the tray to call after
-  the user re-signs in.
-- `Configuration/SyncPreferences.cs` — `NotifyOnSyncCompletion`,
-  `NotifyOnErrors`, `NotifyOnConflicts` (all default `true`).
-- `Program.cs` — registered `INetworkMonitor`, `INotificationDispatcher`, and
-  `INotificationManager` as singletons.
-- Tests: 24 new unit tests (122 -> 146 green) covering notification gating,
-  network-state transitions, auth-expired pause + resume, offline pause +
-  reconnect, 429 retry, completion notification, and conflict notification.
+## Phase 7 — done
 
-## Phase 7 goals
+- `Storage/IAutoStartManager` + `RegistryAutoStartManager` (HKCU Run, no UAC)
+  + `InMemoryAutoStartManager` (non-Windows / test). The manager is decoupled
+  from the registry via `IAutoStartRegistryGateway` so the unit tests in
+  `AutoStartManagerTests` never touch HKCU.
+- `Storage/IAccountStore` + `AccountStore` — JSON file under
+  `%APPDATA%\interlinedlist-sync\account.json` for the signed-in email.
+- `Sync/ISyncStateRepository.ResetAsync` + matching SQL.
+- `UI/ViewModels/SettingsViewModel` rebuilt around the four tabs: General
+  (folder browse + AutoStart + interval slider), Account (signed-in email +
+  Sign Out), Notifications (master + three sub-toggles wired into existing
+  `NotifyOn*` prefs), Advanced (log/sync/prefs-folder buttons + Reset state
+  + version display).
+- `UI/Views/SettingsWindow.xaml` rewritten as a `TabControl` (480×360,
+  resizable). Folder browse uses `Microsoft.Win32.OpenFolderDialog`
+  (.NET 8+). Reset state shows a confirmation `MessageBox`.
+- `UI/Views/OnboardingWindow.xaml.cs` now prompts for the sync folder on
+  first sign-in via the same `OpenFolderDialog` and persists it through
+  `IPreferencesStore`.
+- `Program.cs` registers `IAccountStore` always; `IAutoStartManager` is
+  `RegistryAutoStartManager` on Windows, `InMemoryAutoStartManager`
+  otherwise.
+- `SyncEngine.CurrentPollInterval` exposed so the hot-reload behaviour
+  (existing `IOptionsMonitor<SyncPreferences>` plumbing) is testable.
+- 19 new unit tests across `SettingsViewModelTests`, `OnboardingViewModelTests`,
+  `AutoStartManagerTests`, `AccountStoreTests`, `SyncEngineTests`,
+  `SyncStateRepositoryTests` (146 → 165 green).
 
-1. **Surface the new preferences in the Settings window.** Add toggles for
-   `NotifyOnSyncCompletion`, `NotifyOnErrors`, `NotifyOnConflicts`. Bind via
-   `SettingsViewModel` -> `IPreferencesStore`.
-2. **Hook the tray's "Sign In" item** to `SyncEngine.ResumeAfterReauth()` so
-   the engine actually un-pauses after a successful re-auth round-trip.
-3. **Swap the dispatcher.** Add `Microsoft.WindowsAppSDK` (sparse package /
-   MSIX) and replace `LoggingNotificationDispatcher` with a real
-   `AppNotificationManager.Default.Show(builder.BuildNotification())` call.
-   Wire `AppNotificationManager.Default.NotificationInvoked` to a router that
-   resolves the `arguments` query string back to a `ITrayCommandHandler` call.
-4. **Run the engine through a smoke test on Windows** to confirm
-   `NetworkChange.NetworkAvailabilityChanged` fires for the scenarios that
-   matter (Wi-Fi off, VPN drop, captive portal).
+## Phase 8 — done (modulo signing cert)
 
-## Open questions for Phase 7
+- `InterlinedSync.Package/InterlinedSync.Package.wapproj` scaffolded as a
+  Desktop Bridge / MSIX project referencing the WPF host with a `win-x64`
+  publish profile.
+- `Package.appxmanifest` updated with a placeholder publisher and an
+  explanatory comment; manifest must be updated to match the signing cert's
+  subject before the first signed release.
+- `.github/workflows/release.yml` Windows job extended to:
+  - Set up MSBuild.
+  - Build the `.wapproj` (`UapAppxPackageBuildMode=SideloadOnly`,
+    signing disabled at MSBuild level — we sign as a separate step).
+  - Locate the produced `.msix` and copy it as
+    `InterlinedSync-Windows-MSIX-<tag>.msix`.
+  - Run `signtool sign` against it conditionally on
+    `secrets.WINDOWS_CERT_PFX_BASE64` / `secrets.WINDOWS_CERT_PASSWORD`.
+  - Upload both the zip and the MSIX under the `windows-release` artifact.
+- `windows/PACKAGING.md` documents the secrets, the local test workflow
+  (`Add-AppxPackage`), and the manifest/publisher constraints.
 
-- Windows App SDK toasts require either MSIX packaging or a sparse package
-  + `AppNotificationManager.Default.Register()` at startup. The packaging
-  project (`InterlinedSync.Package`) is already an MSIX `.wapproj` so the
-  MSIX path is straightforward — confirm before sparse-package work begins.
-- Where does the "Open Log" action open: the current `interlinedsync-.log`
-  file directly, or the containing folder? (Folder is safer if the file is
-  rotating.)
-- Should we add an offline-aware delay to push attempts so the channel
-  doesn't back up while paused, or is the existing pause check sufficient?
+## v1.0 readiness gates
+
+1. **Code-signing certificate.** Provision an EV (or at minimum OV) cert,
+   populate `WINDOWS_CERT_PFX_BASE64` + `WINDOWS_CERT_PASSWORD` in repo
+   secrets, then update the `Publisher="..."` in
+   `InterlinedSync.Package/Package.appxmanifest` to exactly match the cert
+   `Subject`. Until both are in place the CI MSIX is unsigned and will
+   refuse to install without developer mode.
+2. **Final API endpoints.** Confirm `/api/auth/sync-token` (or the
+   replacement login endpoint) and the documents / delta paths with the
+   server team; flip the 5 skipped integration tests on against a sandbox
+   host by setting `INTERLINEDSYNC_API_BASE`, `_USERNAME`, `_PASSWORD`.
+3. **Toast notifications.** The Windows App SDK
+   `Microsoft.Windows.AppNotifications` integration is still stubbed by
+   `LoggingNotificationDispatcher`. Once MSIX is the primary distribution
+   channel, swap in the real dispatcher and wire
+   `AppNotificationManager.Default.NotificationInvoked` to the existing
+   `ITrayCommandHandler` (Open Folder / Sign In / Open Log).
+4. **Store assets.** Replace the placeholder PNGs under
+   `InterlinedSync.Package/Assets/` (Square44, Square150, Wide310, Store
+   logo) with final artwork before the first public install.
+5. **Smoke test on real Windows hardware** — UI tests are still WinAppDriver
+   territory (Phase 9 candidate). Manually verify: settings tabs render,
+   Browse… opens the folder picker, Sign Out returns to OnboardingWindow,
+   Reset state empties the SQLite DB, and the MSIX-installed build picks up
+   the `startupTask` extension instead of writing to HKCU.
+
+## Phase 9 candidates (out of v1.0)
+
+- WinAppDriver-based UI smoke tests (`InterlinedSync.UITests`).
+- Microsoft Store submission pipeline (replaces EV cert with Store-issued
+  signing).
+- Localization scaffolding (move strings into `.resw`).
+- Telemetry pipeline (optional, opt-in only — never on by default).
+- Optional offline-aware backoff on the push channel so the queue does not
+  grow unbounded while paused.

@@ -62,7 +62,8 @@ public partial class App : Application, ITrayCommandHandler
         }
 
         var vm = _host.Services.GetRequiredService<OnboardingViewModel>();
-        var window = new OnboardingWindow(vm);
+        var prefs = _host.Services.GetRequiredService<Storage.IPreferencesStore>();
+        var window = new OnboardingWindow(vm, prefs);
         var result = window.ShowDialog();
         return result == true;
     }

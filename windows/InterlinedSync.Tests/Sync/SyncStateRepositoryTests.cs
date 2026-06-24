@@ -137,6 +137,32 @@ public sealed class SyncStateRepositoryTests : IAsyncLifetime
         loaded.Should().BeNull();
     }
 
+    [Fact]
+    public async Task ResetAsync_ClearsDocumentsAndMetadata()
+    {
+        await _repo.UpsertDocumentAsync(NewRecord("doc-1", @"C:\sync\one.md"));
+        await _repo.UpsertDocumentAsync(NewRecord("doc-2", @"C:\sync\two.md"));
+        await _repo.SetLastSyncedAtAsync(DateTimeOffset.UtcNow);
+        await _repo.AppendLogAsync("pull.complete", "downloaded=2");
+
+        await _repo.ResetAsync();
+
+        (await _repo.ListAllAsync()).Should().BeEmpty();
+        (await _repo.GetLastSyncedAtAsync()).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ResetAsync_IsIdempotent()
+    {
+        var act = async () =>
+        {
+            await _repo.ResetAsync();
+            await _repo.ResetAsync();
+        };
+
+        await act.Should().NotThrowAsync();
+    }
+
     private static SyncStateRecord NewRecord(string id, string path, string sha = "deadbeef")
     {
         var now = new DateTimeOffset(2026, 6, 21, 12, 0, 0, TimeSpan.Zero);

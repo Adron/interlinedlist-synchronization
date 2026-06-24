@@ -117,11 +117,14 @@ public static class Program
 
         services.AddSingleton<IFileSystem, FileSystemImpl>();
         services.AddSingleton<IPreferencesStore, PreferencesManager>();
+        services.AddSingleton<IAccountStore, AccountStore>();
 
 #if WINDOWS_BUILD
         services.AddSingleton<ICredentialStore, Storage.CredentialManager>();
+        services.AddSingleton<IAutoStartManager, RegistryAutoStartManager>();
 #else
         services.AddSingleton<ICredentialStore, InMemoryCredentialStore>();
+        services.AddSingleton<IAutoStartManager, InMemoryAutoStartManager>();
 #endif
 
         services.AddSingleton<IAuthProvider, AuthManager>();

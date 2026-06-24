@@ -59,4 +59,11 @@ public interface ISyncStateRepository
     /// sent as <c>?lastSyncAt=</c> on the next delta call.
     /// </summary>
     Task SetLastSyncedAtAsync(DateTimeOffset syncedAt, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Clears every row from <c>documents</c>, <c>folders</c>, <c>sync_log</c>
+    /// and <c>sync_metadata</c>. Used by the settings "Reset state" affordance
+    /// to force a clean re-sync without touching auth or local files.
+    /// </summary>
+    Task ResetAsync(CancellationToken cancellationToken = default);
 }

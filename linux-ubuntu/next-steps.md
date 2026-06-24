@@ -2,7 +2,7 @@
 
 ## Current State (as of 2026-06-22)
 
-The Cargo workspace and all crates are implemented through **M1 + M2 + M3 + M4 (complete) + M5 (complete) + M6 (complete)**.
+The Cargo workspace and all crates are implemented through **M1 + M2 + M3 + M4 (complete) + M5 (complete) + M6 (complete) + M7 (complete)**.
 
 ### What is complete
 
@@ -49,7 +49,11 @@ The Cargo workspace and all crates are implemented through **M1 + M2 + M3 + M4 (
    - `cargo deb --no-build` (with stub binary) confirmed both scripts land in `control.tar.xz` at mode 755.
    - `lintian` requires a Linux host; verify in CI (`Build .deb` step already present).
 
-5. **M7 — Snap** — `snapcraft.yaml` not started. Next task.
+5. **M7 — Snap** — COMPLETE.
+   - `snap/snapcraft.yaml` created with `base: core22`, `confinement: classic`, `plugin: rust`.
+   - CI `build-linux` job updated: installs snapcraft, runs `snapcraft --destructive-mode`, uploads `.snap` in `linux-release` artifact.
+   - Release notes table updated with snap install instruction.
+   - `PACKAGING.md` documents local test install, Store credential setup, classic vs strict confinement tradeoff, and release checklist.
 
 6. **Test coverage gaps**:
    - `file-watcher`: event emission test using `tempfile` + `tokio` (Linux-only, `#[ignore]` on macOS)
@@ -79,11 +83,13 @@ cargo deb
 lintian target/debian/*.deb
 ```
 
-### Next tasks in order
+### Next tasks in order (all platform packaging complete)
 
 1. Wire `zbus` optional dep for `network-monitor` feature; verify `NetworkManagerMonitor` compiles on Ubuntu 22.04 with zbus 4.x
-2. Write `snapcraft.yaml` (M7)
-3. Add file-watcher event emission test (Linux-only / `#[ignore]`)
+2. Add file-watcher event emission test (Linux-only / `#[ignore]`)
+3. Register `interlinedlist-sync` snap name at https://snapcraft.io/snaps
+4. Request classic confinement approval at https://forum.snapcraft.io/c/store-requests/
+5. Set `SNAPCRAFT_STORE_CREDENTIALS` repo secret; enable Store upload step in `release.yml`
 
 ---
 

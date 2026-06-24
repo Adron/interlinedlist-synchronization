@@ -723,15 +723,58 @@ public sealed class SyncEngineTests : IAsyncLifetime
 
     private sealed class TestOptionsMonitor<T> : IOptionsMonitor<T>
     {
+        private readonly List<Action<T, string?>> _listeners = new();
         public TestOptionsMonitor(T current) => CurrentValue = current;
-        public T CurrentValue { get; }
+        public T CurrentValue { get; private set; }
         public T Get(string? name) => CurrentValue;
-        public IDisposable OnChange(Action<T, string?> listener) => NullDisposable.Instance;
-
-        private sealed class NullDisposable : IDisposable
+        public IDisposable OnChange(Action<T, string?> listener)
         {
-            public static readonly NullDisposable Instance = new();
-            public void Dispose() { }
+            _listeners.Add(listener);
+            return new Unsubscribe(() => _listeners.Remove(listener));
         }
+
+        public void Set(T value)
+        {
+            CurrentValue = value;
+            foreach (var l in _listeners.ToArray())
+            {
+                l(value, null);
+            }
+        }
+
+        private sealed class Unsubscribe : IDisposable
+        {
+            private readonly Action _onDispose;
+            public Unsubscribe(Action onDispose) => _onDispose = onDispose;
+            public void Dispose() => _onDispose();
+        }
+    }
+
+    [Fact]
+    public void CurrentPollInterval_ReflectsOptionsMonitorUpdates()
+    {
+        var prefs = new SyncPreferences { SyncFolder = SyncFolder, PollIntervalSeconds = 30 };
+        var monitor = new TestOptionsMonitor<SyncPreferences>(prefs);
+        var engine = new SyncEngine(
+            _client, _repository, _fileMapper, _notifier, _fileSystem, _watcher, _conflictResolver,
+            _notifications, _networkMonitor, monitor, NullLogger<SyncEngine>.Instance);
+
+        engine.CurrentPollInterval.Should().Be(TimeSpan.FromSeconds(30));
+
+        monitor.Set(new SyncPreferences { SyncFolder = SyncFolder, PollIntervalSeconds = 120 });
+
+        engine.CurrentPollInterval.Should().Be(TimeSpan.FromSeconds(120));
+    }
+
+    [Fact]
+    public void CurrentPollInterval_ClampsToMinimum()
+    {
+        var prefs = new SyncPreferences { SyncFolder = SyncFolder, PollIntervalSeconds = 1 };
+        var monitor = new TestOptionsMonitor<SyncPreferences>(prefs);
+        var engine = new SyncEngine(
+            _client, _repository, _fileMapper, _notifier, _fileSystem, _watcher, _conflictResolver,
+            _notifications, _networkMonitor, monitor, NullLogger<SyncEngine>.Instance);
+
+        engine.CurrentPollInterval.Should().Be(TimeSpan.FromSeconds(AppConstants.MinimumPollIntervalSeconds));
     }
 }

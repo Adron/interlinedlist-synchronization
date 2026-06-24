@@ -2,6 +2,7 @@ using System.Net;
 using FluentAssertions;
 using InterlinedSync.API;
 using InterlinedSync.Auth;
+using InterlinedSync.Storage;
 using InterlinedSync.UI.ViewModels;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -11,8 +12,11 @@ namespace InterlinedSync.Tests.UI;
 
 public class OnboardingViewModelTests
 {
-    private static OnboardingViewModel Build(Mock<IAuthProvider> auth)
-        => new(auth.Object, NullLogger<OnboardingViewModel>.Instance);
+    private static OnboardingViewModel Build(Mock<IAuthProvider> auth, Mock<IAccountStore>? account = null)
+    {
+        account ??= new Mock<IAccountStore>();
+        return new OnboardingViewModel(auth.Object, account.Object, NullLogger<OnboardingViewModel>.Instance);
+    }
 
     [Fact]
     public void SignInCommand_CannotExecute_WhenFieldsEmpty()
@@ -67,6 +71,23 @@ public class OnboardingViewModelTests
         completed.Should().BeTrue();
         vm.SignInSucceeded.Should().BeTrue();
         vm.HasError.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task SignInCommand_PersistsEmail_OnSuccess()
+    {
+        var auth = new Mock<IAuthProvider>();
+        auth.Setup(a => a.SignInAsync("alice@example.com", "pwd", It.IsAny<CancellationToken>())).ReturnsAsync(true);
+        var account = new Mock<IAccountStore>();
+        var vm = Build(auth, account);
+        vm.Username = "alice@example.com";
+        vm.Password = "pwd";
+
+        await vm.SignInCommand.ExecuteAsync(null);
+
+        account.Verify(
+            a => a.SetSignedInEmailAsync("alice@example.com", It.IsAny<CancellationToken>()),
+            Times.Once);
     }
 
     [Fact]

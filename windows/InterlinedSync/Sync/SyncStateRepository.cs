@@ -318,6 +318,31 @@ public sealed class SyncStateRepository : ISyncStateRepository, IAsyncDisposable
         }
     }
 
+    public async Task ResetAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var cmd = connection.CreateCommand();
+            cmd.CommandText = """
+                DELETE FROM documents;
+                DELETE FROM folders;
+                DELETE FROM sync_log;
+                DELETE FROM sync_metadata;
+                """;
+            await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+            _logger.LogInformation("Sync state reset by user.");
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     public ValueTask DisposeAsync()
     {
         _gate.Dispose();

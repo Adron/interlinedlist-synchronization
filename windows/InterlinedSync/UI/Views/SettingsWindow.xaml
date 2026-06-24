@@ -2,55 +2,132 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="InterlinedList Sync Settings"
-        Width="460" Height="360"
+        Width="480" Height="360"
+        MinWidth="420" MinHeight="320"
         WindowStartupLocation="CenterScreen"
-        ResizeMode="NoResize"
+        ResizeMode="CanResize"
         ShowInTaskbar="True">
-    <Grid Margin="24">
+    <Grid Margin="16">
         <Grid.RowDefinitions>
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
-            <RowDefinition Height="Auto" />
             <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0"
-                   Text="Settings"
-                   FontSize="18"
-                   FontWeight="SemiBold"
-                   Margin="0,0,0,16" />
+        <TabControl Grid.Row="0">
 
-        <TextBlock Grid.Row="1" Text="Sync folder" Margin="0,0,0,4" />
-        <TextBox Grid.Row="2"
-                 Text="{Binding SyncFolder, UpdateSourceTrigger=PropertyChanged}"
-                 Margin="0,0,0,12" />
+            <TabItem Header="General">
+                <StackPanel Margin="12" Orientation="Vertical">
+                    <TextBlock Text="Sync folder" Margin="0,0,0,4" />
+                    <Grid Margin="0,0,0,12">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBox Grid.Column="0"
+                                 Text="{Binding SyncFolder, UpdateSourceTrigger=PropertyChanged}"
+                                 IsReadOnly="True"
+                                 VerticalAlignment="Center" />
+                        <Button Grid.Column="1"
+                                Content="Browse…"
+                                Margin="8,0,0,0"
+                                Width="80"
+                                Click="BrowseSyncFolder_OnClick" />
+                    </Grid>
 
-        <TextBlock Grid.Row="3"
-                   Text="{Binding PollIntervalSeconds, StringFormat='Poll interval: {0} seconds'}"
-                   Margin="0,0,0,4" />
-        <Slider Grid.Row="4"
-                Minimum="{Binding MinimumPollIntervalSeconds, Mode=OneTime}"
-                Maximum="300"
-                Value="{Binding PollIntervalSeconds}"
-                TickFrequency="10"
-                IsSnapToTickEnabled="True"
-                Margin="0,0,0,12" />
+                    <CheckBox Content="Launch InterlinedList Sync on Windows startup"
+                              IsChecked="{Binding AutoStart}"
+                              Margin="0,0,0,16" />
 
-        <CheckBox Grid.Row="5"
-                  Content="Launch InterlinedList Sync on Windows startup"
-                  IsChecked="{Binding AutoStart}"
-                  Margin="0,0,0,12" />
+                    <TextBlock Text="{Binding PollIntervalSeconds, StringFormat='Sync interval: {0} seconds'}"
+                               Margin="0,0,0,4" />
+                    <Slider Minimum="{Binding MinimumPollIntervalSeconds, Mode=OneTime}"
+                            Maximum="{Binding MaximumPollIntervalSeconds, Mode=OneTime}"
+                            Value="{Binding PollIntervalSeconds}"
+                            TickFrequency="5"
+                            IsSnapToTickEnabled="True"
+                            Margin="0,0,0,12" />
+                </StackPanel>
+            </TabItem>
 
-        <TextBlock Grid.Row="6"
+            <TabItem Header="Account">
+                <StackPanel Margin="12" Orientation="Vertical">
+                    <TextBlock Text="Signed in as" Margin="0,0,0,4" />
+                    <TextBlock Text="{Binding SignedInEmail}"
+                               FontWeight="SemiBold"
+                               Margin="0,0,0,16" />
+
+                    <Button Content="Sign Out"
+                            Width="120"
+                            HorizontalAlignment="Left"
+                            Command="{Binding SignOutCommand}" />
+                </StackPanel>
+            </TabItem>
+
+            <TabItem Header="Notifications">
+                <StackPanel Margin="12" Orientation="Vertical">
+                    <CheckBox Content="Enable notifications"
+                              IsChecked="{Binding NotificationsEnabled}"
+                              Margin="0,0,0,12" />
+
+                    <StackPanel Margin="20,0,0,0"
+                                IsEnabled="{Binding NotificationsEnabled}">
+                        <CheckBox Content="Sync completion"
+                                  IsChecked="{Binding NotifyOnSyncCompletion}"
+                                  Margin="0,0,0,6" />
+                        <CheckBox Content="Errors"
+                                  IsChecked="{Binding NotifyOnErrors}"
+                                  Margin="0,0,0,6" />
+                        <CheckBox Content="Conflicts"
+                                  IsChecked="{Binding NotifyOnConflicts}"
+                                  Margin="0,0,0,6" />
+                    </StackPanel>
+                </StackPanel>
+            </TabItem>
+
+            <TabItem Header="Advanced">
+                <StackPanel Margin="12" Orientation="Vertical">
+                    <TextBlock Text="Log folder" Margin="0,0,0,4" />
+                    <TextBox Text="{Binding LogFolderPath, Mode=OneWay}"
+                             IsReadOnly="True"
+                             Margin="0,0,0,8" />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,16">
+                        <Button Content="Open Log Folder"
+                                Width="140"
+                                Margin="0,0,8,0"
+                                Command="{Binding OpenLogFolderCommand}" />
+                        <Button Content="Open Sync Folder"
+                                Width="140"
+                                Command="{Binding OpenSyncFolderCommand}" />
+                    </StackPanel>
+
+                    <TextBlock Text="Preferences file" Margin="0,0,0,4" />
+                    <TextBox Text="{Binding PreferencesFilePath, Mode=OneWay}"
+                             IsReadOnly="True"
+                             Margin="0,0,0,16" />
+
+                    <Button Content="Reset sync state…"
+                            Width="160"
+                            HorizontalAlignment="Left"
+                            Margin="0,0,0,16"
+                            Click="ResetState_OnClick" />
+
+                    <TextBlock Text="{Binding VersionDisplay, StringFormat='Version: {0}'}"
+                               Foreground="#666" />
+                </StackPanel>
+            </TabItem>
+
+        </TabControl>
+
+        <TextBlock Grid.Row="1"
                    Text="{Binding StatusMessage}"
                    Foreground="#555"
-                   VerticalAlignment="Top" />
+                   Margin="0,8,0,0" />
 
-        <StackPanel Grid.Row="7" Orientation="Horizontal" HorizontalAlignment="Right">
+        <StackPanel Grid.Row="2"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,8,0,0">
             <Button Content="Close"
                     Width="80"
                     Margin="0,0,8,0"

@@ -1,0 +1,73 @@
+name: interlinedlist-sync
+title: InterlinedList Sync
+version: '0.1.0'
+summary: Bidirectional sync client for InterlinedList documents
+description: |
+  Native Ubuntu sync client for InterlinedList. Keeps a local folder
+  in sync with your InterlinedList documents — bidirectional, with
+  conflict resolution and a tray icon for status visibility.
+
+  Watches local Markdown (.md) files via inotify and syncs with the
+  InterlinedList REST API. Credentials are stored in GNOME Keyring.
+  The tray icon shows sync status and surfaces a Settings dialog.
+
+  Requires classic confinement because it must access arbitrary
+  user-chosen folders anywhere under $HOME for the sync directory.
+
+base: core22
+confinement: classic
+grade: stable
+
+# Build on both amd64 and arm64. Each must be built on its own
+# native host (or via snapcraft remote-build).
+architectures:
+  - build-on: amd64
+    build-for: amd64
+  - build-on: arm64
+    build-for: arm64
+
+apps:
+  interlinedlist-sync:
+    command: bin/interlinedlist-sync
+    daemon: simple
+    install-mode: enable
+    # classic confinement does not use the plug/slot sandbox, but
+    # declare interfaces for documentation and future strict migration.
+    plugs:
+      - home
+      - network
+      - desktop
+      - password-manager-service
+
+parts:
+  interlinedlist-sync:
+    plugin: rust
+    source: .
+    # stable channel matches the toolchain pinned in CI
+    rust-channel: stable
+    build-packages:
+      - pkg-config
+      - libgtk-4-dev
+      - libadwaita-1-dev
+      - libayatana-appindicator3-dev
+      - libsecret-1-dev
+      - libdbus-1-dev
+      - libsqlite3-dev
+    stage-packages:
+      - libgtk-4-1
+      - libadwaita-1-0
+      - libayatana-appindicator3-1
+      - libsecret-1-0
+      - libdbus-1-3
+      - libsqlite3-0
+    override-build: |
+      # Build only the binary crate; tray-app requires a live display so
+      # exclude it from the snap build the same way CI excludes it.
+      craftctl default
+      # craftctl default runs `cargo build --release` across the workspace.
+      # The binary lands at parts/interlinedlist-sync/build/target/release/.
+    # Forward the binary to snap's bin/ prefix.
+    organize:
+      target/release/interlinedlist-sync: bin/interlinedlist-sync
+    prime:
+      - bin/interlinedlist-sync
