@@ -7,7 +7,7 @@ namespace InterlinedSync.API;
 /// Callers can inspect <see cref="StatusCode"/> to react to specific failures
 /// (e.g. <see cref="HttpStatusCode.Unauthorized"/> triggers a re-auth flow).
 /// </summary>
-public sealed class ApiException : Exception
+public class ApiException : Exception
 {
     public ApiException(string message, HttpStatusCode? statusCode = null, Exception? inner = null)
         : base(message, inner)

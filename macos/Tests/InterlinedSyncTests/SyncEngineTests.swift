@@ -48,6 +48,20 @@ final class SyncEngineTests: XCTestCase {
         )
     }
 
+    private func makeEngine(
+        notifications: NotificationManager? = nil,
+        networkMonitor: NetworkMonitoring
+    ) -> SyncEngine {
+        SyncEngine(
+            client: client,
+            mapper: mapper,
+            state: state,
+            notifications: notifications,
+            networkMonitor: networkMonitor,
+            pollInterval: 999
+        )
+    }
+
     // MARK: - Pull
 
     func testPull_writesNewRemoteDocumentsToDisk() async throws {
@@ -218,6 +232,150 @@ final class SyncEngineTests: XCTestCase {
         let message = await state.errorMessage
         if case .error = status {} else { XCTFail("Expected .error, got \(status)") }
         XCTAssertNotNil(message)
+    }
+
+    func testAuthExpired_setsAuthExpiredStateAndNotifies() async throws {
+        server.unauthorizedNextFetch = true
+        let center = MockNotificationCenter()
+        let notifications = NotificationManager(center: center, isEnabled: { true })
+        let engine = makeEngine(notifications: notifications)
+
+        await engine.syncNow()
+
+        let status = await state.status
+        XCTAssertEqual(status, .authExpired)
+        XCTAssertTrue(center.addedTitles.contains("Sign in again"))
+    }
+
+    func testRateLimited_setsErrorStateWithRetryAfter() async throws {
+        server.rateLimitNextFetchCount = 1
+        server.rateLimitRetryAfter = "30"
+        let engine = makeEngine()
+
+        await engine.syncNow()
+
+        let message = await state.errorMessage
+        XCTAssertEqual(message, "Rate limited — retrying in 30s.")
+        let status = await state.status
+        if case .error = status {} else { XCTFail("Expected .error, got \(status)") }
+    }
+
+    func testRateLimited_thenRecovers_clearsBackoff() async throws {
+        server.seed(DocumentDTO(id: "r1", title: "X", content: "y", folderId: nil, updatedAt: date(1)))
+        server.rateLimitNextFetchCount = 1
+        server.rateLimitRetryAfter = "0"
+        let engine = makeEngine()
+
+        await engine.syncNow()
+        if case .error = await state.status {} else { XCTFail("Expected rate-limit error first") }
+
+        await engine.syncNow()
+        let status = await state.status
+        XCTAssertEqual(status, .idle, "A successful retry should clear the rate-limit error")
+    }
+
+    // MARK: - Offline
+
+    func testOffline_pausesSyncAndSetsOfflineStatus() async throws {
+        server.seed(DocumentDTO(id: "r1", title: "X", content: "y", folderId: nil, updatedAt: date(1)))
+        let monitor = StubNetworkMonitor(satisfied: true)
+        let engine = makeEngine(networkMonitor: monitor)
+
+        await engine.applyReachabilityForTesting(satisfied: false)
+
+        let status = await state.status
+        XCTAssertEqual(status, .offline)
+
+        let beforeCount = server.fetchCount
+        await engine.syncNow()
+        XCTAssertEqual(server.fetchCount, beforeCount, "syncNow must be a no-op while offline")
+    }
+
+    func testOffline_thenOnline_resumesAndSyncs() async throws {
+        server.seed(DocumentDTO(id: "r1", title: "X", content: "y", folderId: nil, updatedAt: date(1)))
+        let monitor = StubNetworkMonitor(satisfied: true)
+        let engine = makeEngine(networkMonitor: monitor)
+
+        await engine.applyReachabilityForTesting(satisfied: false)
+        let offline = await state.status
+        XCTAssertEqual(offline, .offline)
+
+        await engine.applyReachabilityForTesting(satisfied: true)
+
+        let status = await state.status
+        XCTAssertNotEqual(status, .offline, "Coming back online should leave the offline state")
+        let synced = await state.lastSyncedAt
+        XCTAssertNotNil(synced, "Coming back online should trigger a sync")
+    }
+
+    // MARK: - Per-document concurrency
+
+    func testParallel_pushesMultipleNewFilesConcurrently() async throws {
+        for index in 1...5 {
+            let url = tempDir.appendingPathComponent("Doc \(index).md")
+            try "body \(index)".write(to: url, atomically: true, encoding: .utf8)
+        }
+        let engine = makeEngine()
+
+        try await engine.runCycle()
+
+        XCTAssertEqual(server.createCount, 5, "All five new files should be created on the server")
+        XCTAssertEqual(server.documents.count, 5)
+    }
+
+    func testParallel_independentDocsBothPushAndPull() async throws {
+        server.seed(DocumentDTO(id: "r1", title: "Editable", content: "old", folderId: nil, updatedAt: date(1)))
+        server.seed(DocumentDTO(id: "r2", title: "RemoteOnly", content: "remote-old", folderId: nil, updatedAt: date(1)))
+        let engine = makeEngine()
+        try await engine.runCycle()
+
+        let editURL = tempDir.appendingPathComponent("Editable.md")
+        try editInPlace(editURL, body: "local change", modifiedAt: date(100))
+        server.update(id: "r2", body: "remote change", updatedAt: date(100))
+        server.stageDelta(
+            DeltaResponse(
+                syncedAt: Date(timeIntervalSince1970: 7_000_000),
+                documents: [
+                    DocumentDelta(
+                        id: "r2", title: "RemoteOnly", content: "remote change",
+                        folderId: nil, updatedAt: date(100), deletedAt: nil
+                    )
+                ]
+            )
+        )
+
+        try await engine.runCycle()
+
+        XCTAssertEqual(server.documents["r1"]?.content, "local change", "Local edit pushed")
+        let remoteOnly = try String(
+            contentsOf: tempDir.appendingPathComponent("RemoteOnly.md"), encoding: .utf8
+        )
+        XCTAssertEqual(remoteOnly, "remote change", "Remote edit pulled to disk")
+    }
+
+    // MARK: - Conflict detected on push
+
+    func testPush_detectsRemoteChangedSincePull_routesToConflict() async throws {
+        server.seed(DocumentDTO(id: "r1", title: "Shared", content: "original", folderId: nil, updatedAt: date(1)))
+        let engine = makeEngine()
+        try await engine.runCycle()
+
+        let fileURL = tempDir.appendingPathComponent("Shared.md")
+        try editInPlace(fileURL, body: "local edit", modifiedAt: date(200))
+        // Remote diverges but the delta endpoint hides it, so the push-side check must catch it.
+        server.update(id: "r1", body: "remote edit", updatedAt: date(300))
+
+        try await engine.runCycle()
+
+        let canonical = try String(contentsOf: fileURL, encoding: .utf8)
+        XCTAssertEqual(canonical, "remote edit", "Remote should win when a push would clobber it")
+
+        let conflictCopies = try FileManager.default
+            .contentsOfDirectory(at: tempDir, includingPropertiesForKeys: nil)
+            .filter { $0.lastPathComponent.contains(".conflict-") }
+        XCTAssertEqual(conflictCopies.count, 1)
+        XCTAssertEqual(try String(contentsOf: conflictCopies[0], encoding: .utf8), "local edit")
+        XCTAssertEqual(server.updateCount, 0, "No PATCH should be sent for a clobbering push")
     }
 
     // MARK: - Notifications

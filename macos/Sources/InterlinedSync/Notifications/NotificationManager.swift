@@ -10,6 +10,7 @@ actor NotificationManager {
         case completion
         case error
         case conflict
+        case auth
     }
 
     private let center: UserNotificationScheduling
@@ -47,6 +48,15 @@ actor NotificationManager {
             ? "A conflicting local edit was saved as a copy."
             : "\(count) conflicting local edits were saved as copies."
         await post(title: "Sync conflict", body: body, identifier: "sync.conflict")
+    }
+
+    func notifyAuthExpired() async {
+        guard isCategoryEnabled(.auth) else { return }
+        await post(
+            title: "Sign in again",
+            body: "Your session expired. Open Preferences to sign back in and resume syncing.",
+            identifier: "sync.auth-expired"
+        )
     }
 
     private func post(title: String, body: String, identifier: String) async {

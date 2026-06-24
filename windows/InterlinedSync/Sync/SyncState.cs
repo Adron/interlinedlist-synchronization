@@ -11,4 +11,6 @@ public enum SyncState
     Paused,
     Error,
     SignedOut,
+    Offline,
+    AuthExpired,
 }

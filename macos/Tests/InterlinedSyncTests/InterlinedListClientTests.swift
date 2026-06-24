@@ -56,12 +56,49 @@ final class InterlinedListClientTests: XCTestCase {
         }
     }
 
-    func testFetchDocuments_401_throwsNotAuthenticated() async {
+    func testFetchDocuments_401_throwsAuthExpired() async {
         MockURLProtocol.requestHandler = { request in
             (self.response(for: request, status: 401), Data())
         }
+        await XCTAssertThrowsSyncError(.authExpired) {
+            _ = try await self.client.fetchDocuments()
+        }
+    }
+
+    func testFetchDocuments_403_throwsNotAuthenticated() async {
+        MockURLProtocol.requestHandler = { request in
+            (self.response(for: request, status: 403), Data())
+        }
         await XCTAssertThrowsSyncError(.notAuthenticated) {
             _ = try await self.client.fetchDocuments()
+        }
+    }
+
+    func testFetchDocuments_429_throwsRateLimitedWithRetryAfterSeconds() async {
+        MockURLProtocol.requestHandler = { request in
+            (self.response(for: request, status: 429, headers: ["Retry-After": "12"]), Data())
+        }
+        do {
+            _ = try await client.fetchDocuments()
+            XCTFail("Expected rateLimited error")
+        } catch let SyncError.rateLimited(retryAfter) {
+            XCTAssertEqual(retryAfter, 12)
+        } catch {
+            XCTFail("Expected rateLimited, got \(error)")
+        }
+    }
+
+    func testFetchDocuments_429_withoutRetryAfter_returnsNilDelay() async {
+        MockURLProtocol.requestHandler = { request in
+            (self.response(for: request, status: 429), Data())
+        }
+        do {
+            _ = try await client.fetchDocuments()
+            XCTFail("Expected rateLimited error")
+        } catch let SyncError.rateLimited(retryAfter) {
+            XCTAssertNil(retryAfter)
+        } catch {
+            XCTFail("Expected rateLimited, got \(error)")
         }
     }
 
@@ -205,19 +242,45 @@ final class InterlinedListClientTests: XCTestCase {
         try await client.deleteDocument(id: "xyz")
     }
 
-    func testDeleteDocument_401_throwsNotAuthenticated() async {
+    func testDeleteDocument_401_throwsAuthExpired() async {
         MockURLProtocol.requestHandler = { request in
             (self.response(for: request, status: 401), Data())
         }
-        await XCTAssertThrowsSyncError(.notAuthenticated) {
+        await XCTAssertThrowsSyncError(.authExpired) {
             try await self.client.deleteDocument(id: "xyz")
         }
     }
 
+    func testRetryAfter_parsesHTTPDate() {
+        let future = Date().addingTimeInterval(60)
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        let header = formatter.string(from: future)
+
+        let response = HTTPURLResponse(
+            url: baseURL, statusCode: 429, httpVersion: nil,
+            headerFields: ["Retry-After": header]
+        )!
+        let delay = InterlinedListClient.retryAfter(from: response)
+        XCTAssertNotNil(delay)
+        XCTAssertEqual(delay ?? 0, 60, accuracy: 2)
+    }
+
+    func testRetryAfter_absentHeader_returnsNil() {
+        let response = HTTPURLResponse(url: baseURL, statusCode: 429, httpVersion: nil, headerFields: nil)!
+        XCTAssertNil(InterlinedListClient.retryAfter(from: response))
+    }
+
     // MARK: - Helpers
 
-    private func response(for request: URLRequest, status: Int) -> HTTPURLResponse {
-        HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+    private func response(
+        for request: URLRequest,
+        status: Int,
+        headers: [String: String]? = nil
+    ) -> HTTPURLResponse {
+        HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: headers)!
     }
 }
 

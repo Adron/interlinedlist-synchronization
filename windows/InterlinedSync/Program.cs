@@ -4,6 +4,8 @@ using InterlinedSync.API;
 using InterlinedSync.Auth;
 using InterlinedSync.Configuration;
 using InterlinedSync.FileSystem;
+using InterlinedSync.Network;
+using InterlinedSync.Notifications;
 using InterlinedSync.Storage;
 using InterlinedSync.Sync;
 using InterlinedSync.SystemTray;
@@ -132,6 +134,10 @@ public static class Program
         services.AddSingleton<IFileMapper, FileMapper>();
         services.AddSingleton<IFileWatcher, FileSystemWatcherService>();
         services.AddSingleton<IConflictResolver, ConflictResolver>();
+
+        services.AddSingleton<INetworkMonitor, NetworkInformationMonitor>();
+        services.AddSingleton<INotificationDispatcher, LoggingNotificationDispatcher>();
+        services.AddSingleton<INotificationManager, WindowsAppNotificationManager>();
 
         services.AddTransient<BearerTokenHandler>();
         services.AddHttpClient<IInterlinedListClient, InterlinedListClient>()

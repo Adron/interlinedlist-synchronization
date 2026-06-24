@@ -25,13 +25,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             UserDefaults.standard.object(forKey: "notificationsEnabled") as? Bool ?? true
         },
         isCategoryEnabled: { category in
-            let key: String
             switch category {
-            case .completion: key = "notifyOnSyncCompletion"
-            case .error: key = "notifyOnErrors"
-            case .conflict: key = "notifyOnConflictCopies"
+            case .auth:
+                return true
+            case .completion, .error, .conflict:
+                let key: String
+                switch category {
+                case .completion: key = "notifyOnSyncCompletion"
+                case .error: key = "notifyOnErrors"
+                case .conflict: key = "notifyOnConflictCopies"
+                case .auth: key = ""
+                }
+                return UserDefaults.standard.object(forKey: key) as? Bool ?? true
             }
-            return UserDefaults.standard.object(forKey: key) as? Bool ?? true
         }
     )
 
@@ -59,6 +65,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             mapper: mapper,
             state: syncState,
             notifications: notificationManager,
+            networkMonitor: NetworkMonitor(),
             pollInterval: preferences.pollIntervalSeconds
         )
         syncEngine = engine

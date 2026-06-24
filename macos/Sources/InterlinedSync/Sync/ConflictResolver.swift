@@ -8,6 +8,46 @@ enum ConflictResolution: Sendable, Equatable {
     case keptLocal
 }
 
+/// The action a single document needs given which sides changed since the last sync. Pure and
+/// state-free so the decision table can be exercised directly without touching disk or the network.
+enum ConflictDecision: Sendable, Equatable {
+    case noOp
+    case push
+    case pull
+    case conflictCopy
+}
+
+/// Namespace for the pure conflict decision table, kept separate from the side-effecting
+/// `ConflictResolving` strategies so the routing logic is unit-testable in isolation.
+enum ConflictResolver {
+    static func decide(
+        localChanged: Bool,
+        remoteChanged: Bool,
+        localExists: Bool,
+        remoteExists: Bool
+    ) -> ConflictDecision {
+        switch (localExists, remoteExists) {
+        case (false, false):
+            return .noOp
+        case (true, false):
+            // Gone from the server. A local change means the user re-created it; push. Otherwise
+            // the server deleted it and the local copy should follow on pull.
+            return localChanged ? .push : .pull
+        case (false, true):
+            // Gone from disk. A remote change means the server re-created it; pull. Otherwise the
+            // user deleted it locally and that deletion should push.
+            return remoteChanged ? .pull : .push
+        case (true, true):
+            switch (localChanged, remoteChanged) {
+            case (true, true): return .conflictCopy
+            case (true, false): return .push
+            case (false, true): return .pull
+            case (false, false): return .noOp
+            }
+        }
+    }
+}
+
 /// A strategy for reconciling a document that changed locally and remotely since the last sync.
 /// Phase 3 ships only `RemoteWinsConflictResolver`; this seam leaves room for user-selectable
 /// strategies in a later phase.

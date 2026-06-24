@@ -136,4 +136,27 @@ final class NotificationManagerTests: XCTestCase {
 
         XCTAssertTrue(center.added.isEmpty)
     }
+
+    func testAuthExpired_postsSignInNotification() async {
+        let center = MockNotificationCenter()
+        let manager = makeManager(center: center)
+
+        await manager.notifyAuthExpired()
+
+        XCTAssertEqual(center.added.count, 1)
+        XCTAssertEqual(center.added.first?.content.title, "Sign in again")
+    }
+
+    func testDisabledAuthCategory_suppressesAuthNotification() async {
+        let center = MockNotificationCenter()
+        let manager = NotificationManager(
+            center: center,
+            isEnabled: { true },
+            isCategoryEnabled: { $0 != .auth }
+        )
+
+        await manager.notifyAuthExpired()
+
+        XCTAssertTrue(center.added.isEmpty)
+    }
 }

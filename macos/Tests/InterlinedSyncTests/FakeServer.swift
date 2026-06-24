@@ -12,7 +12,11 @@ final class FakeServer: @unchecked Sendable {
     private(set) var createCount = 0
     private(set) var updateCount = 0
     private(set) var deleteCount = 0
+    private(set) var fetchCount = 0
     var failNextFetch = false
+    var unauthorizedNextFetch = false
+    var rateLimitNextFetchCount = 0
+    var rateLimitRetryAfter: String?
 
     private var delta: DeltaResponse?
     private(set) var lastDeltaSince: String??
@@ -71,9 +75,19 @@ final class FakeServer: @unchecked Sendable {
 
         switch (method, idComponent) {
         case ("GET", _):
+            fetchCount += 1
             if failNextFetch {
                 failNextFetch = false
                 return (response(request, 500), Data())
+            }
+            if unauthorizedNextFetch {
+                unauthorizedNextFetch = false
+                return (response(request, 401), Data())
+            }
+            if rateLimitNextFetchCount > 0 {
+                rateLimitNextFetchCount -= 1
+                let headers = rateLimitRetryAfter.map { ["Retry-After": $0] }
+                return (response(request, 429, headers: headers), Data())
             }
             let payload = DocumentListResponse(documents: Array(store.values))
             return (response(request, 200), try encoder.encode(payload))
@@ -138,7 +152,11 @@ final class FakeServer: @unchecked Sendable {
         return data
     }
 
-    private func response(_ request: URLRequest, _ status: Int) -> HTTPURLResponse {
-        HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: nil)!
+    private func response(
+        _ request: URLRequest,
+        _ status: Int,
+        headers: [String: String]? = nil
+    ) -> HTTPURLResponse {
+        HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: headers)!
     }
 }

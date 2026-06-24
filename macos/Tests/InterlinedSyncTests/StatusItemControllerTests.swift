@@ -56,6 +56,21 @@ final class StatusItemControllerTests: XCTestCase {
         XCTAssertEqual(controller.statusMenuItem.title, "Status: Error — offline")
     }
 
+    func testRenderOfflineStatus() {
+        controller.render(status: .offline, lastSyncedAt: nil)
+
+        XCTAssertEqual(controller.statusMenuItem.title, "Status: Offline")
+        XCTAssertFalse(controller.syncNowMenuItem.isEnabled, "Sync Now is pointless while offline")
+        XCTAssertEqual(presenter.lastIcon?.symbolName, "wifi.slash")
+    }
+
+    func testRenderAuthExpiredStatus() {
+        controller.render(status: .authExpired, lastSyncedAt: nil)
+
+        XCTAssertEqual(controller.statusMenuItem.title, "Status: Sign in required")
+        XCTAssertEqual(presenter.lastIcon?.symbolName, "exclamationmark.triangle.fill")
+    }
+
     func testRenderLastSyncedAtUsesRelativeFormatting() {
         let fiveMinutesAgo = Date().addingTimeInterval(-300)
         controller.render(status: .idle, lastSyncedAt: fiveMinutesAgo)
@@ -89,6 +104,8 @@ final class StatusItemControllerTests: XCTestCase {
         XCTAssertEqual(StatusItemController.iconDescriptor(for: .idle).symbolName, "arrow.triangle.2.circlepath")
         XCTAssertEqual(StatusItemController.iconDescriptor(for: .syncing).symbolName, "arrow.triangle.2.circlepath")
         XCTAssertEqual(StatusItemController.iconDescriptor(for: .paused).symbolName, "pause.circle")
+        XCTAssertEqual(StatusItemController.iconDescriptor(for: .offline).symbolName, "wifi.slash")
+        XCTAssertEqual(StatusItemController.iconDescriptor(for: .authExpired).symbolName, "exclamationmark.triangle.fill")
         XCTAssertEqual(StatusItemController.iconDescriptor(for: .error("x")).symbolName, "exclamationmark.triangle")
     }
 

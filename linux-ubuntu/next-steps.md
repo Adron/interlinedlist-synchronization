@@ -2,7 +2,7 @@
 
 ## Current State (as of 2026-06-22)
 
-The Cargo workspace and all crates are implemented through **M1 + M2 + M3 + M4 (complete) + M5 (complete)**.
+The Cargo workspace and all crates are implemented through **M1 + M2 + M3 + M4 (complete) + M5 (complete) + M6 (complete)**.
 
 ### What is complete
 
@@ -19,7 +19,7 @@ The Cargo workspace and all crates are implemented through **M1 + M2 + M3 + M4 (
 | `notifier` | `Notifier` trait + `StubNotifier` + `LibnotifyNotifier` (notify-rust, libnotify backend) |
 | `tray-app` | `ksni`-based StatusNotifierItem tray; Settings dialog refactored to window-level Apply/Revert; folder picker result persisted on Apply/close; `LocalWins` radio button added |
 | `interlinedlist-sync` (bin) | `--login` / `--daemon` / headless modes; `sync_now_rx` plumbed from tray to engine; `config_path` forwarded to tray for settings dialog |
-| Packaging | systemd user unit, AppArmor profile (starter), `.desktop` autostart entry, sysctl drop-in |
+| Packaging | systemd user unit, AppArmor profile (starter), `.desktop` autostart entry, sysctl drop-in, `postinst`/`prerm` maintainer scripts |
 | Unit tests | 59 unit tests across all crates; 5 live-API integration tests |
 
 ### M4 — Completed items
@@ -42,12 +42,14 @@ The Cargo workspace and all crates are implemented through **M1 + M2 + M3 + M4 (
 
 3. **M4 — `libadwaita` version on Ubuntu 22.04** — libadwaita 1.0.x in Jammy does not have `PreferencesWindow`, `SpinRow`, or `SwitchRow`. The PPA requirement (`ppa:gnome-team/gnome-next`) must be documented in the `.deb` README and `postinst`.
 
-4. **M6 — `.deb` packaging** — `packaging/` files exist and `[package.metadata.deb]` is in `Cargo.toml`. Still needed:
-   - `maintainer-scripts/postinst` to install sysctl drop-in (`sysctl --system`) and AppArmor profile (`apparmor_parser`)
-   - `maintainer-scripts/prerm` to stop the user service
-   - Verify `lintian` passes on a built `.deb`
+4. **M6 — `.deb` packaging** — COMPLETE.
+   - `packaging/maintainer-scripts/postinst`: reloads sysctl (`sysctl --system`) and loads AppArmor profile (`apparmor_parser -r`) on configure.
+   - `packaging/maintainer-scripts/prerm`: unloads AppArmor profile (`apparmor_parser -R`) on remove/upgrade/deconfigure.
+   - `maintainer-scripts = "../../packaging/maintainer-scripts"` added to `[package.metadata.deb]` in `crates/interlinedlist-sync/Cargo.toml`.
+   - `cargo deb --no-build` (with stub binary) confirmed both scripts land in `control.tar.xz` at mode 755.
+   - `lintian` requires a Linux host; verify in CI (`Build .deb` step already present).
 
-5. **M7 — Snap** — `snapcraft.yaml` not started.
+5. **M7 — Snap** — `snapcraft.yaml` not started. Next task.
 
 6. **Test coverage gaps**:
    - `file-watcher`: event emission test using `tempfile` + `tokio` (Linux-only, `#[ignore]` on macOS)
@@ -80,9 +82,8 @@ lintian target/debian/*.deb
 ### Next tasks in order
 
 1. Wire `zbus` optional dep for `network-monitor` feature; verify `NetworkManagerMonitor` compiles on Ubuntu 22.04 with zbus 4.x
-2. Write `postinst`/`prerm` maintainer scripts and verify `lintian` (M6)
-3. Write `snapcraft.yaml` (M7)
-4. Add file-watcher event emission test (Linux-only / `#[ignore]`)
+2. Write `snapcraft.yaml` (M7)
+3. Add file-watcher event emission test (Linux-only / `#[ignore]`)
 
 ---
 

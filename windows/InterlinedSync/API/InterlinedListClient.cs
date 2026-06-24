@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using InterlinedSync.API.Models;
 using InterlinedSync.Configuration;
+using InterlinedSync.Errors;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -63,7 +64,7 @@ public sealed class InterlinedListClient : IInterlinedListClient
         if (!response.IsSuccessStatusCode)
         {
             _logger.LogWarning("Login failed with status {Status}.", response.StatusCode);
-            throw new ApiException($"Login failed with status {(int)response.StatusCode}.", response.StatusCode);
+            ThrowForStatus(response, "Login", path: _options.LoginEndpoint);
         }
 
         LoginResponse? payload;
@@ -211,7 +212,7 @@ public sealed class InterlinedListClient : IInterlinedListClient
             if (!response.IsSuccessStatusCode)
             {
                 _logger.LogWarning("Delete {DocumentId} failed with status {Status}.", documentId, response.StatusCode);
-                throw new ApiException($"Delete {documentId} failed with status {(int)response.StatusCode}.", response.StatusCode);
+                ThrowForStatus(response, "DELETE", path);
             }
         }
         finally
@@ -281,10 +282,15 @@ public sealed class InterlinedListClient : IInterlinedListClient
 
         if (!response.IsSuccessStatusCode)
         {
-            var status = response.StatusCode;
-            _logger.LogWarning("{Method} {Path} failed with status {Status}.", method, path, status);
-            response.Dispose();
-            throw new ApiException($"{method} {path} failed with status {(int)status}.", status);
+            try
+            {
+                _logger.LogWarning("{Method} {Path} failed with status {Status}.", method, path, response.StatusCode);
+                ThrowForStatus(response, method.Method, path);
+            }
+            finally
+            {
+                response.Dispose();
+            }
         }
 
         return response;
@@ -314,13 +320,35 @@ public sealed class InterlinedListClient : IInterlinedListClient
 
         if (!response.IsSuccessStatusCode)
         {
-            var status = response.StatusCode;
-            _logger.LogWarning("{Method} {Path} failed with status {Status}.", method, path, status);
-            response.Dispose();
-            throw new ApiException($"{method} {path} failed with status {(int)status}.", status);
+            try
+            {
+                _logger.LogWarning("{Method} {Path} failed with status {Status}.", method, path, response.StatusCode);
+                ThrowForStatus(response, method.Method, path);
+            }
+            finally
+            {
+                response.Dispose();
+            }
         }
 
         return response;
+    }
+
+    [System.Diagnostics.CodeAnalysis.DoesNotReturn]
+    private static void ThrowForStatus(HttpResponseMessage response, string operation, string path)
+    {
+        var status = response.StatusCode;
+        if (status == System.Net.HttpStatusCode.Unauthorized)
+        {
+            throw new AuthExpiredException($"{operation} {path} returned 401 Unauthorized.");
+        }
+        if (status == System.Net.HttpStatusCode.TooManyRequests)
+        {
+            throw new RateLimitedException(
+                $"{operation} {path} returned 429 Too Many Requests.",
+                response.Headers.RetryAfter?.Delta);
+        }
+        throw new ApiException($"{operation} {path} failed with status {(int)status}.", status);
     }
 
     private async Task<Document> ReadDocumentEnvelopeAsync(HttpResponseMessage response, string operation, CancellationToken cancellationToken)

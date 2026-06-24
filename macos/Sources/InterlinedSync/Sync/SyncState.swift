@@ -3,6 +3,9 @@ import Foundation
 enum SyncError: Error {
     case notImplemented
     case notAuthenticated
+    case authExpired
+    case offline
+    case rateLimited(retryAfter: TimeInterval?)
     case network(Error)
     case fileSystem(Error)
     case conflict(documentID: String)
@@ -13,6 +16,8 @@ enum SyncStatus: Equatable, Sendable {
     case idle
     case syncing
     case paused
+    case offline
+    case authExpired
     case error(String)
 }
 
@@ -55,6 +60,23 @@ final class SyncState: ObservableObject {
     func fail(_ message: String) {
         status = .error(message)
         errorMessage = message
+    }
+
+    func authExpired() {
+        status = .authExpired
+        errorMessage = "Your session expired. Sign in again to keep syncing."
+    }
+
+    func wentOffline() {
+        status = .offline
+        errorMessage = nil
+    }
+
+    func cameOnline() {
+        if case .offline = status {
+            status = .idle
+            errorMessage = nil
+        }
     }
 
     func paused() {

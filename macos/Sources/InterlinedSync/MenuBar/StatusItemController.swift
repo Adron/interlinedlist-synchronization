@@ -104,7 +104,7 @@ final class StatusItemController: NSObject {
 
         let isPaused = status == .paused
         pauseResumeMenuItem.title = isPaused ? "Resume Sync" : "Pause Sync"
-        syncNowMenuItem.isEnabled = !isPaused && status != .syncing
+        syncNowMenuItem.isEnabled = !isPaused && status != .syncing && status != .offline
 
         applyIcon(for: status)
     }
@@ -119,6 +119,8 @@ final class StatusItemController: NSObject {
         case .idle: return "Idle"
         case .syncing: return "Syncing…"
         case .paused: return "Paused"
+        case .offline: return "Offline"
+        case .authExpired: return "Sign in required"
         case let .error(message): return "Error — \(message)"
         }
     }
@@ -139,6 +141,10 @@ final class StatusItemController: NSObject {
             return ("arrow.triangle.2.circlepath", "InterlinedList Sync — syncing")
         case .paused:
             return ("pause.circle", "InterlinedList Sync — paused")
+        case .offline:
+            return ("wifi.slash", "InterlinedList Sync — offline")
+        case .authExpired:
+            return ("exclamationmark.triangle.fill", "InterlinedList Sync — sign in required")
         case .error:
             return ("exclamationmark.triangle", "InterlinedList Sync — error")
         }

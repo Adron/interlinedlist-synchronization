@@ -1,3 +1,4 @@
+using System.IO;
 using System.IO.Abstractions;
 using InterlinedSync.API.Models;
 using InterlinedSync.FileSystem;

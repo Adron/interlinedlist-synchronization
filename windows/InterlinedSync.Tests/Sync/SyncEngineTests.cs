@@ -8,6 +8,8 @@ using InterlinedSync.API;
 using InterlinedSync.API.Models;
 using InterlinedSync.Configuration;
 using InterlinedSync.FileSystem;
+using InterlinedSync.Network.Mocks;
+using InterlinedSync.Notifications.Mocks;
 using InterlinedSync.Sync;
 using InterlinedSync.Tests.FileSystem;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -30,6 +32,8 @@ public sealed class SyncEngineTests : IAsyncLifetime
     private InterlinedListClient _client = null!;
     private StubFileWatcher _watcher = null!;
     private ConflictResolver _conflictResolver = null!;
+    private MockNotificationManager _notifications = null!;
+    private StubNetworkMonitor _networkMonitor = null!;
     private SyncEngine _engine = null!;
 
     public async Task InitializeAsync()
@@ -61,6 +65,8 @@ public sealed class SyncEngineTests : IAsyncLifetime
 
         _watcher = new StubFileWatcher();
         _conflictResolver = new ConflictResolver(_fileSystem, _fileMapper, _repository, NullLogger<ConflictResolver>.Instance);
+        _notifications = new MockNotificationManager();
+        _networkMonitor = new StubNetworkMonitor();
 
         _engine = new SyncEngine(
             _client,
@@ -70,6 +76,8 @@ public sealed class SyncEngineTests : IAsyncLifetime
             _fileSystem,
             _watcher,
             _conflictResolver,
+            _notifications,
+            _networkMonitor,
             monitor,
             NullLogger<SyncEngine>.Instance);
     }
@@ -223,7 +231,8 @@ public sealed class SyncEngineTests : IAsyncLifetime
         var prefs = new SyncPreferences { SyncFolder = string.Empty };
         var monitor = new TestOptionsMonitor<SyncPreferences>(prefs);
         var engine = new SyncEngine(
-            _client, _repository, _fileMapper, _notifier, _fileSystem, _watcher, _conflictResolver, monitor,
+            _client, _repository, _fileMapper, _notifier, _fileSystem, _watcher, _conflictResolver,
+            _notifications, _networkMonitor, monitor,
             NullLogger<SyncEngine>.Instance);
 
         var result = await engine.RunOnceAsync(default);
@@ -494,6 +503,163 @@ public sealed class SyncEngineTests : IAsyncLifetime
         await Task.WhenAll(taskA, taskB);
 
         maxInflight.Should().BeGreaterThan(1, "two unrelated docs must not serialize through a global lock");
+    }
+
+    [Fact]
+    public async Task RunOnceAsync_PausesEngine_OnAuthExpired()
+    {
+        _http.When(HttpMethod.Get, "*/api/documents")
+             .Respond(HttpStatusCode.Unauthorized);
+
+        var result = await _engine.RunOnceAsync(default);
+
+        result.Error.Should().NotBeNullOrEmpty();
+        _notifier.Current.Should().Be(SyncState.AuthExpired);
+        _engine.IsPaused.Should().BeTrue();
+        _notifications.Calls.Should().ContainSingle(c => c.Kind == NotificationKind.AuthExpired);
+    }
+
+    [Fact]
+    public async Task RunOnceAsync_SkipsWhenAuthPaused_UntilResumed()
+    {
+        _http.When(HttpMethod.Get, "*/api/documents")
+             .Respond(HttpStatusCode.Unauthorized);
+
+        await _engine.RunOnceAsync(default);
+        _engine.IsPaused.Should().BeTrue();
+
+        var skipped = await _engine.RunOnceAsync(default);
+        skipped.Skipped.Should().BeTrue();
+        skipped.Error.Should().Be("auth expired");
+
+        _engine.ResumeAfterReauth();
+        _engine.IsPaused.Should().BeFalse();
+        _notifier.Current.Should().Be(SyncState.Idle);
+    }
+
+    [Fact]
+    public async Task RunOnceAsync_PausesEngine_WhenOffline()
+    {
+        _networkMonitor.SetOnline(false);
+        _engine.IsPaused.Should().BeTrue();
+        _notifier.Current.Should().Be(SyncState.Offline);
+
+        var result = await _engine.RunOnceAsync(default);
+
+        result.Skipped.Should().BeTrue();
+        result.Error.Should().Be("offline");
+    }
+
+    [Fact]
+    public async Task RunOnceAsync_ResumesEngine_OnConnectivityRestored()
+    {
+        _networkMonitor.SetOnline(false);
+        _engine.IsPaused.Should().BeTrue();
+
+        _networkMonitor.SetOnline(true);
+        _engine.IsPaused.Should().BeFalse();
+        _notifier.Current.Should().Be(SyncState.Idle);
+
+        StubDocuments();
+        var result = await _engine.RunOnceAsync(default);
+        result.Skipped.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task RunOnceAsync_RetriesAfterRateLimit_WithBackoff()
+    {
+        var attempt = 0;
+        var docJson = System.Text.Json.JsonSerializer.Serialize(new { documents = Array.Empty<Document>() }, StubJson);
+
+        _http.When(HttpMethod.Get, "*/api/documents")
+             .Respond(_ =>
+             {
+                 attempt++;
+                 if (attempt == 1)
+                 {
+                     var resp = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+                     resp.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromMilliseconds(50));
+                     return resp;
+                 }
+                 return new HttpResponseMessage(HttpStatusCode.OK)
+                 {
+                     Content = new StringContent(docJson, Encoding.UTF8, "application/json"),
+                 };
+             });
+
+        var result = await _engine.RunOnceAsync(default);
+
+        attempt.Should().BeGreaterOrEqualTo(2);
+        result.Error.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task RunOnceAsync_NotifiesCompletion_WhenChangesApplied()
+    {
+        var doc = new Document("doc-1", "Hello", null, "# Hello", new DateTimeOffset(2026, 6, 22, 0, 0, 0, TimeSpan.Zero));
+        StubDocuments(doc);
+
+        await _engine.RunOnceAsync(default);
+
+        _notifications.Calls.Should().ContainSingle(c => c.Kind == NotificationKind.SyncCompleted);
+    }
+
+    [Fact]
+    public async Task RunOnceAsync_DoesNotNotifyCompletion_WhenNothingChanged()
+    {
+        StubDocuments();
+
+        await _engine.RunOnceAsync(default);
+
+        _notifications.Calls.Should().NotContain(c => c.Kind == NotificationKind.SyncCompleted);
+    }
+
+    [Fact]
+    public async Task RunOnceAsync_NotifiesFailure_OnApiError()
+    {
+        _http.When(HttpMethod.Get, "*/api/documents")
+             .Respond(HttpStatusCode.InternalServerError);
+
+        await _engine.RunOnceAsync(default);
+
+        _notifications.Calls.Should().ContainSingle(c => c.Kind == NotificationKind.SyncFailed);
+    }
+
+    [Fact]
+    public async Task PushOnceAsync_NotifiesConflict_WithPath()
+    {
+        var path = Path.Combine(SyncFolder, "Conflicted.md");
+        _fileSystem.AddFile(path, new MockFileData("local edits"));
+        var lastSyncedServerTime = new DateTimeOffset(2026, 6, 20, 0, 0, 0, TimeSpan.Zero);
+        await _repository.UpsertDocumentAsync(new SyncStateRecord(
+            "doc-1", path, lastSyncedServerTime, lastSyncedServerTime, "oldsha"));
+
+        var newerRemote = new Document("doc-1", "Conflicted", null, "server body",
+            new DateTimeOffset(2026, 6, 22, 0, 0, 0, TimeSpan.Zero));
+        StubGetDocument("doc-1", newerRemote);
+
+        var result = await _engine.PushOnceAsync(new LocalChange(LocalChangeKind.Modified, path), default);
+
+        result.Action.Should().Be("conflict");
+        var call = _notifications.Calls.Should().ContainSingle(c => c.Kind == NotificationKind.ConflictCopy).Subject;
+        call.Detail.Should().Be(result.ConflictCopyPath);
+    }
+
+    [Fact]
+    public async Task PushOnceAsync_PausesEngine_OnAuthExpired()
+    {
+        var path = Path.Combine(SyncFolder, "AuthBoom.md");
+        _fileSystem.AddFile(path, new MockFileData("data"));
+
+        _http.When(HttpMethod.Post, "*/api/documents")
+             .Respond(HttpStatusCode.Unauthorized);
+
+        var result = await _engine.PushOnceAsync(new LocalChange(LocalChangeKind.Created, path), default);
+
+        result.Error.Should().NotBeNullOrEmpty();
+        _engine.IsPaused.Should().BeTrue();
+        _notifier.Current.Should().Be(SyncState.AuthExpired);
+        _notifications.Calls.Should().ContainSingle(c => c.Kind == NotificationKind.AuthExpired);
     }
 
     private static readonly System.Text.Json.JsonSerializerOptions StubJson = new()

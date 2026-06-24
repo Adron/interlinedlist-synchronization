@@ -6,7 +6,10 @@ using System.Text;
 using InterlinedSync.API;
 using InterlinedSync.API.Models;
 using InterlinedSync.Configuration;
+using InterlinedSync.Errors;
 using InterlinedSync.FileSystem;
+using InterlinedSync.Network;
+using InterlinedSync.Notifications;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -16,6 +19,9 @@ namespace InterlinedSync.Sync;
 public sealed class SyncEngine : BackgroundService
 {
     private const string PullLockKey = "__pull__";
+    private const int MaxRateLimitRetries = 3;
+    private static readonly TimeSpan DefaultRateLimitBackoff = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan MaxRateLimitBackoff = TimeSpan.FromSeconds(30);
 
     private readonly IInterlinedListClient _client;
     private readonly ISyncStateRepository _repository;
@@ -24,9 +30,16 @@ public sealed class SyncEngine : BackgroundService
     private readonly IFileSystem _fileSystem;
     private readonly IFileWatcher _fileWatcher;
     private readonly IConflictResolver _conflictResolver;
+    private readonly INotificationManager _notifications;
+    private readonly INetworkMonitor _networkMonitor;
     private readonly IOptionsMonitor<SyncPreferences> _preferences;
     private readonly ILogger<SyncEngine> _logger;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Random _jitter = new();
+    private readonly Lock _pauseGate = new();
+
+    private bool _authPaused;
+    private bool _offlinePaused;
 
     public SyncEngine(
         IInterlinedListClient client,
@@ -36,6 +49,8 @@ public sealed class SyncEngine : BackgroundService
         IFileSystem fileSystem,
         IFileWatcher fileWatcher,
         IConflictResolver conflictResolver,
+        INotificationManager notifications,
+        INetworkMonitor networkMonitor,
         IOptionsMonitor<SyncPreferences> preferences,
         ILogger<SyncEngine> logger)
     {
@@ -46,8 +61,49 @@ public sealed class SyncEngine : BackgroundService
         _fileSystem = fileSystem;
         _fileWatcher = fileWatcher;
         _conflictResolver = conflictResolver;
+        _notifications = notifications;
+        _networkMonitor = networkMonitor;
         _preferences = preferences;
         _logger = logger;
+
+        _offlinePaused = !_networkMonitor.IsOnline;
+        _networkMonitor.ConnectivityChanged += OnConnectivityChanged;
+    }
+
+    /// <summary>
+    /// True while the engine has been paused for an actionable reason
+    /// (auth expired or network offline). Push/pull cycles short-circuit
+    /// while this is set.
+    /// </summary>
+    public bool IsPaused
+    {
+        get
+        {
+            lock (_pauseGate)
+            {
+                return _authPaused || _offlinePaused;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Clears the auth-expired pause flag. Called after the user signs in
+    /// again from the tray UI.
+    /// </summary>
+    public void ResumeAfterReauth()
+    {
+        bool wasPaused;
+        lock (_pauseGate)
+        {
+            wasPaused = _authPaused;
+            _authPaused = false;
+        }
+
+        if (wasPaused)
+        {
+            _logger.LogInformation("Resuming sync after re-authentication.");
+            RecomputeState();
+        }
     }
 
     /// <summary>
@@ -61,6 +117,12 @@ public sealed class SyncEngine : BackgroundService
         {
             _logger.LogDebug("Sync folder is not configured; skipping pull cycle.");
             return SyncCycleResult.ForSkipped("sync folder not configured");
+        }
+
+        if (IsPaused)
+        {
+            _logger.LogDebug("Pull skipped while engine is paused.");
+            return SyncCycleResult.ForSkipped(_authPaused ? "auth expired" : "offline");
         }
 
         var gate = GetLock(PullLockKey);
@@ -82,14 +144,17 @@ public sealed class SyncEngine : BackgroundService
                     IReadOnlyList<Document> remoteDocuments;
                     try
                     {
-                        remoteDocuments = await _client.GetDocumentsAsync(cancellationToken).ConfigureAwait(false);
+                        remoteDocuments = await RunWithRetryAsync(
+                            ct => _client.GetDocumentsAsync(ct),
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (AuthExpiredException ex)
+                    {
+                        return await HandleAuthExpiredAsync(ex, "pull", cancellationToken).ConfigureAwait(false);
                     }
                     catch (ApiException ex)
                     {
-                        _logger.LogWarning(ex, "Pull failed: could not fetch document list.");
-                        _notifier.SetState(SyncState.Error);
-                        await _repository.AppendLogAsync("pull.error", ex.Message, cancellationToken).ConfigureAwait(false);
-                        return SyncCycleResult.ForFailure(ex.Message);
+                        return await HandlePullFailureAsync(ex, cancellationToken).ConfigureAwait(false);
                     }
 
                     result = await ReconcileAsync(prefs.SyncFolder, remoteDocuments, cancellationToken).ConfigureAwait(false);
@@ -100,14 +165,17 @@ public sealed class SyncEngine : BackgroundService
                     DeltaResponse delta;
                     try
                     {
-                        delta = await _client.FetchDeltaAsync(lastSyncedAt, cancellationToken).ConfigureAwait(false);
+                        delta = await RunWithRetryAsync(
+                            ct => _client.FetchDeltaAsync(lastSyncedAt, ct),
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (AuthExpiredException ex)
+                    {
+                        return await HandleAuthExpiredAsync(ex, "pull", cancellationToken).ConfigureAwait(false);
                     }
                     catch (ApiException ex)
                     {
-                        _logger.LogWarning(ex, "Pull failed: could not fetch delta.");
-                        _notifier.SetState(SyncState.Error);
-                        await _repository.AppendLogAsync("pull.error", ex.Message, cancellationToken).ConfigureAwait(false);
-                        return SyncCycleResult.ForFailure(ex.Message);
+                        return await HandlePullFailureAsync(ex, cancellationToken).ConfigureAwait(false);
                     }
 
                     result = await ReconcileDeltaAsync(prefs.SyncFolder, delta, cancellationToken).ConfigureAwait(false);
@@ -119,6 +187,13 @@ public sealed class SyncEngine : BackgroundService
                     "pull.complete",
                     $"downloaded={result.Downloaded}, updated={result.Updated}, deleted={result.Deleted}",
                     cancellationToken).ConfigureAwait(false);
+
+                var changed = result.Downloaded + result.Updated + result.Deleted;
+                if (changed > 0)
+                {
+                    await _notifications.NotifySyncCompletedAsync(changed, cancellationToken).ConfigureAwait(false);
+                }
+
                 return result;
             }
             catch (OperationCanceledException)
@@ -130,6 +205,7 @@ public sealed class SyncEngine : BackgroundService
                 _logger.LogError(ex, "Unexpected error during pull cycle.");
                 _notifier.SetState(SyncState.Error);
                 await _repository.AppendLogAsync("pull.error", ex.Message, cancellationToken).ConfigureAwait(false);
+                await _notifications.NotifySyncFailedAsync(ex.Message, cancellationToken).ConfigureAwait(false);
                 return SyncCycleResult.ForFailure(ex.Message);
             }
         }
@@ -144,6 +220,12 @@ public sealed class SyncEngine : BackgroundService
         ArgumentNullException.ThrowIfNull(change);
 
         await _repository.InitializeAsync(cancellationToken).ConfigureAwait(false);
+
+        if (IsPaused)
+        {
+            _logger.LogDebug("Push skipped while engine is paused.");
+            return PushResult.ForSkipped(_authPaused ? "auth expired" : "offline");
+        }
 
         var lockKey = await ResolveLockKeyAsync(change, cancellationToken).ConfigureAwait(false);
         var gate = GetLock(lockKey);
@@ -165,17 +247,29 @@ public sealed class SyncEngine : BackgroundService
                     "push." + result.Action,
                     $"path={change.Path}",
                     cancellationToken).ConfigureAwait(false);
+
+                if (result.Action == "conflict" && !string.IsNullOrEmpty(result.ConflictCopyPath))
+                {
+                    await _notifications.NotifyConflictCopyCreatedAsync(result.ConflictCopyPath, cancellationToken).ConfigureAwait(false);
+                }
+
                 return result;
             }
             catch (OperationCanceledException)
             {
                 throw;
             }
+            catch (AuthExpiredException ex)
+            {
+                await MarkAuthExpiredAsync(ex, "push", change.Path, cancellationToken).ConfigureAwait(false);
+                return PushResult.ForFailure(ex.Message);
+            }
             catch (ApiException ex)
             {
                 _logger.LogWarning(ex, "Push failed for {Path}.", change.Path);
                 _notifier.SetState(SyncState.Error);
                 await _repository.AppendLogAsync("push.error", ex.Message, cancellationToken).ConfigureAwait(false);
+                await _notifications.NotifySyncFailedAsync(ex.Message, cancellationToken).ConfigureAwait(false);
                 return PushResult.ForFailure(ex.Message);
             }
             catch (Exception ex)
@@ -183,6 +277,7 @@ public sealed class SyncEngine : BackgroundService
                 _logger.LogError(ex, "Unexpected error pushing {Path}.", change.Path);
                 _notifier.SetState(SyncState.Error);
                 await _repository.AppendLogAsync("push.error", ex.Message, cancellationToken).ConfigureAwait(false);
+                await _notifications.NotifySyncFailedAsync(ex.Message, cancellationToken).ConfigureAwait(false);
                 return PushResult.ForFailure(ex.Message);
             }
         }
@@ -219,6 +314,7 @@ public sealed class SyncEngine : BackgroundService
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation("SyncEngine started.");
+        _networkMonitor.Start();
 
         var prefs = _preferences.CurrentValue;
         if (!string.IsNullOrEmpty(prefs.SyncFolder))
@@ -239,6 +335,8 @@ public sealed class SyncEngine : BackgroundService
         await Task.WhenAll(pushTask, pullTask).ConfigureAwait(false);
 
         await _fileWatcher.StopAsync(CancellationToken.None).ConfigureAwait(false);
+        _networkMonitor.Stop();
+        _networkMonitor.ConnectivityChanged -= OnConnectivityChanged;
         _logger.LogInformation("SyncEngine stopped.");
     }
 
@@ -463,7 +561,9 @@ public sealed class SyncEngine : BackgroundService
 
         if (existing is null)
         {
-            var created = await _client.CreateDocumentAsync(title, content, cancellationToken).ConfigureAwait(false);
+            var created = await RunWithRetryAsync(
+                ct => _client.CreateDocumentAsync(title, content, ct),
+                cancellationToken).ConfigureAwait(false);
             var localModified = _fileSystem.File.GetLastWriteTimeUtc(path);
             var record = new SyncStateRecord(
                 Id: created.Id,
@@ -484,7 +584,13 @@ public sealed class SyncEngine : BackgroundService
         Document remote;
         try
         {
-            remote = await _client.GetDocumentAsync(existing.Id, cancellationToken).ConfigureAwait(false);
+            remote = await RunWithRetryAsync(
+                ct => _client.GetDocumentAsync(existing.Id, ct),
+                cancellationToken).ConfigureAwait(false);
+        }
+        catch (AuthExpiredException)
+        {
+            throw;
         }
         catch (ApiException ex)
         {
@@ -508,7 +614,9 @@ public sealed class SyncEngine : BackgroundService
         string path,
         CancellationToken cancellationToken)
     {
-        var updated = await _client.UpdateDocumentAsync(existing.Id, title, content, cancellationToken).ConfigureAwait(false);
+        var updated = await RunWithRetryAsync(
+            ct => _client.UpdateDocumentAsync(existing.Id, title, content, ct),
+            cancellationToken).ConfigureAwait(false);
         var localModifiedAt = _fileSystem.File.GetLastWriteTimeUtc(path);
         var refreshed = existing with
         {
@@ -559,7 +667,13 @@ public sealed class SyncEngine : BackgroundService
             return PushResult.ForSkipped("not tracked");
         }
 
-        await _client.DeleteDocumentAsync(record.Id, cancellationToken).ConfigureAwait(false);
+        await RunWithRetryAsync(
+            async ct =>
+            {
+                await _client.DeleteDocumentAsync(record.Id, ct).ConfigureAwait(false);
+                return true;
+            },
+            cancellationToken).ConfigureAwait(false);
         await _repository.DeleteByIdAsync(record.Id, cancellationToken).ConfigureAwait(false);
         return PushResult.ForDeleted(record.Id);
     }
@@ -574,11 +688,120 @@ public sealed class SyncEngine : BackgroundService
         var oldRecord = await _repository.GetByPathAsync(change.OldPath, cancellationToken).ConfigureAwait(false);
         if (oldRecord is not null)
         {
-            await _client.DeleteDocumentAsync(oldRecord.Id, cancellationToken).ConfigureAwait(false);
+            await RunWithRetryAsync(
+                async ct =>
+                {
+                    await _client.DeleteDocumentAsync(oldRecord.Id, ct).ConfigureAwait(false);
+                    return true;
+                },
+                cancellationToken).ConfigureAwait(false);
             await _repository.DeleteByIdAsync(oldRecord.Id, cancellationToken).ConfigureAwait(false);
         }
 
         return await PushUpsertAsync(change.Path, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<T> RunWithRetryAsync<T>(Func<CancellationToken, Task<T>> operation, CancellationToken cancellationToken)
+    {
+        var attempt = 0;
+        while (true)
+        {
+            try
+            {
+                return await operation(cancellationToken).ConfigureAwait(false);
+            }
+            catch (RateLimitedException ex) when (attempt < MaxRateLimitRetries)
+            {
+                attempt++;
+                var delay = ComputeRateLimitDelay(ex.RetryAfter, attempt);
+                _logger.LogWarning(
+                    "Rate limited; retrying in {Delay} ms (attempt {Attempt}/{Max}).",
+                    delay.TotalMilliseconds,
+                    attempt,
+                    MaxRateLimitRetries);
+                await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    private TimeSpan ComputeRateLimitDelay(TimeSpan? retryAfter, int attempt)
+    {
+        if (retryAfter is { } supplied && supplied > TimeSpan.Zero)
+        {
+            return supplied;
+        }
+
+        var baseSeconds = DefaultRateLimitBackoff.TotalSeconds * Math.Pow(2, attempt - 1);
+        var jitterSeconds = _jitter.NextDouble();
+        var totalSeconds = Math.Min(baseSeconds + jitterSeconds, MaxRateLimitBackoff.TotalSeconds);
+        return TimeSpan.FromSeconds(totalSeconds);
+    }
+
+    private async Task<SyncCycleResult> HandlePullFailureAsync(ApiException ex, CancellationToken cancellationToken)
+    {
+        _logger.LogWarning(ex, "Pull failed.");
+        _notifier.SetState(SyncState.Error);
+        await _repository.AppendLogAsync("pull.error", ex.Message, cancellationToken).ConfigureAwait(false);
+        await _notifications.NotifySyncFailedAsync(ex.Message, cancellationToken).ConfigureAwait(false);
+        return SyncCycleResult.ForFailure(ex.Message);
+    }
+
+    private async Task<SyncCycleResult> HandleAuthExpiredAsync(AuthExpiredException ex, string operation, CancellationToken cancellationToken)
+    {
+        await MarkAuthExpiredAsync(ex, operation, target: null, cancellationToken).ConfigureAwait(false);
+        return SyncCycleResult.ForFailure(ex.Message);
+    }
+
+    private async Task MarkAuthExpiredAsync(AuthExpiredException ex, string operation, string? target, CancellationToken cancellationToken)
+    {
+        lock (_pauseGate)
+        {
+            _authPaused = true;
+        }
+
+        _logger.LogWarning(ex, "Server returned 401 during {Operation} for {Target}; pausing sync.", operation, target ?? "n/a");
+        _notifier.SetState(SyncState.AuthExpired);
+        await _repository.AppendLogAsync($"{operation}.auth", ex.Message, cancellationToken).ConfigureAwait(false);
+        await _notifications.NotifyAuthExpiredAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    private void OnConnectivityChanged(object? sender, bool isOnline)
+    {
+        bool wasPaused;
+        lock (_pauseGate)
+        {
+            wasPaused = _offlinePaused;
+            _offlinePaused = !isOnline;
+        }
+
+        if (!isOnline)
+        {
+            _logger.LogWarning("Connectivity lost; pausing sync.");
+            _notifier.SetState(SyncState.Offline);
+        }
+        else if (wasPaused)
+        {
+            _logger.LogInformation("Connectivity restored; resuming sync.");
+            RecomputeState();
+        }
+    }
+
+    private void RecomputeState()
+    {
+        lock (_pauseGate)
+        {
+            if (_authPaused)
+            {
+                _notifier.SetState(SyncState.AuthExpired);
+                return;
+            }
+            if (_offlinePaused)
+            {
+                _notifier.SetState(SyncState.Offline);
+                return;
+            }
+        }
+        _notifier.SetState(SyncState.Idle);
     }
 
     private static string ExtractTitle(string path)

@@ -26,4 +26,19 @@ public sealed class SyncPreferences
     /// Whether the app should launch on user login.
     /// </summary>
     public bool AutoStart { get; set; }
+
+    /// <summary>
+    /// Show a toast when a sync cycle completes with at least one change.
+    /// </summary>
+    public bool NotifyOnSyncCompletion { get; set; } = true;
+
+    /// <summary>
+    /// Show a toast when a sync cycle or push fails.
+    /// </summary>
+    public bool NotifyOnErrors { get; set; } = true;
+
+    /// <summary>
+    /// Show a toast when a conflict copy is created.
+    /// </summary>
+    public bool NotifyOnConflicts { get; set; } = true;
 }

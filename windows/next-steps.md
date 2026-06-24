@@ -1,48 +1,63 @@
-# Next Steps — Phase 6 (Notifications + Error Handling)
+# Next Steps — Phase 7 (Settings UI)
 
-Phase 5 (Conflict Resolution) shipped: remote-wins + conflict-copy strategy,
-per-document concurrency via `ConcurrentDictionary<string, SemaphoreSlim>`, and
-pre-PATCH `GET /api/documents/[id]` to detect server-side divergence. The
-engine now writes `<name>.conflict-yyyyMMddTHHmmss.md` on conflict and emits
-a `conflict.detected` row in `sync_log` (the log row is the hand-off point
-the notification layer will pick up in Phase 6).
+Phase 6 (Notifications + Error Handling) shipped: a typed `INotificationManager`
+fronted by a one-method `INotificationDispatcher` seam, an `INetworkMonitor`
+that pauses the engine on offline / resumes on reconnect, typed
+`AuthExpiredException` / `RateLimitedException` thrown from
+`InterlinedListClient`, and a `Retry-After`-aware in-engine backoff loop.
 
-## Phase 5 — done
+## Phase 6 — done
 
-- `Sync/IConflictResolver.cs` + `Sync/ConflictResolver.cs` — pure `Decide`
-  function covers all 5 permutations + `ResolveConflictAsync` writes the
-  conflict copy.
-- `SyncEngine` — per-doc `SemaphoreSlim` map (pull uses a dedicated key,
-  push keys on document id once resolved, otherwise on the file path).
-  Conflict branch fetches the live `updatedAt` before PATCH and routes to
-  `ConflictResolver` when remote is newer than `SyncStateRecord.ServerUpdatedAt`.
-- `SyncStateRecord.LastConflictAt` (nullable) + `documents.last_conflict_at`
-  column with an idempotent `ALTER TABLE` migration in `SyncStateRepository`.
-- `FileMapper.GetConflictPath(originalPath, conflictAt)` — UTC-normalized
-  `yyyyMMddTHHmmss` timestamp.
-- `Program.cs` — registered `IConflictResolver` as singleton.
-- Tests: 14 new unit tests (108 → 122 green) covering all 5 conflict
-  permutations, conflict-copy write, parallel-different-docs concurrency,
-  and `GetConflictPath` formatting.
+- `Notifications/INotificationManager.cs` + `WindowsAppNotificationManager.cs`
+  with action labels for "Open Folder" / "Retry" / "Open Log" / "Open File" /
+  "Sign In". `LoggingNotificationDispatcher` is the cross-platform fallback;
+  the Windows App SDK dispatcher will replace it once the
+  `Microsoft.WindowsAppSDK` package is wired in (sparse package or MSIX).
+- `Notifications/Mocks/MockNotificationManager.cs` — records every call for
+  test assertions.
+- `Network/INetworkMonitor.cs` + `NetworkInformationMonitor.cs` (wraps
+  `System.Net.NetworkInformation.NetworkChange`; on Windows the production
+  monitor will additionally subscribe to
+  `Windows.Networking.Connectivity.NetworkInformation.NetworkStatusChanged`
+  once the WinRT projection is enabled).
+- `Errors/AuthExpiredException.cs` + `RateLimitedException.cs` (both extend
+  `ApiException`; `ApiException` is no longer `sealed`).
+- `Sync/SyncState.cs` — added `Offline` and `AuthExpired`.
+- `Sync/SyncEngine.cs` — pause/resume gates, notification fan-out, in-engine
+  retry-with-jitter for 429, `ResumeAfterReauth()` for the tray to call after
+  the user re-signs in.
+- `Configuration/SyncPreferences.cs` — `NotifyOnSyncCompletion`,
+  `NotifyOnErrors`, `NotifyOnConflicts` (all default `true`).
+- `Program.cs` — registered `INetworkMonitor`, `INotificationDispatcher`, and
+  `INotificationManager` as singletons.
+- Tests: 24 new unit tests (122 -> 146 green) covering notification gating,
+  network-state transitions, auth-expired pause + resume, offline pause +
+  reconnect, 429 retry, completion notification, and conflict notification.
 
-## Phase 6 goals
+## Phase 7 goals
 
-1. **Toast pipeline.** Drain `conflict.detected` (and other interesting
-   `sync_log` rows) into `Microsoft.Windows.AppNotifications` toasts:
-   "Conflict on <name> — local copy preserved at <conflict path>".
-2. **Error funnel.** A typed `SyncErrorBus` so transient API/file errors
-   surface as a single throttled tray-icon state change instead of one
-   toast per retry.
-3. **Tray badge.** Set tray icon overlay (red dot) on `SyncState.Error`,
-   spinner on `Syncing`, clear on `Idle`.
-4. **Retry policy.** `Polly`-style exponential backoff around `PushOnceAsync`
-   for `5xx` and `HttpRequestException`, capped at 5 attempts; expose the
-   final failure as a toast.
+1. **Surface the new preferences in the Settings window.** Add toggles for
+   `NotifyOnSyncCompletion`, `NotifyOnErrors`, `NotifyOnConflicts`. Bind via
+   `SettingsViewModel` -> `IPreferencesStore`.
+2. **Hook the tray's "Sign In" item** to `SyncEngine.ResumeAfterReauth()` so
+   the engine actually un-pauses after a successful re-auth round-trip.
+3. **Swap the dispatcher.** Add `Microsoft.WindowsAppSDK` (sparse package /
+   MSIX) and replace `LoggingNotificationDispatcher` with a real
+   `AppNotificationManager.Default.Show(builder.BuildNotification())` call.
+   Wire `AppNotificationManager.Default.NotificationInvoked` to a router that
+   resolves the `arguments` query string back to a `ITrayCommandHandler` call.
+4. **Run the engine through a smoke test on Windows** to confirm
+   `NetworkChange.NetworkAvailabilityChanged` fires for the scenarios that
+   matter (Wi-Fi off, VPN drop, captive portal).
 
-## Open questions for Phase 6
+## Open questions for Phase 7
 
-- Should `conflict.detected` toasts coalesce per poll cycle (one toast for
-  N conflicts) or stay one-per-event?
-- Should the tray icon offer a "View conflicts" menu item that opens the
-  sync folder filtered to `*.conflict-*.md`?
-- Where does the retry budget reset — per file, per session, or per poll cycle?
+- Windows App SDK toasts require either MSIX packaging or a sparse package
+  + `AppNotificationManager.Default.Register()` at startup. The packaging
+  project (`InterlinedSync.Package`) is already an MSIX `.wapproj` so the
+  MSIX path is straightforward — confirm before sparse-package work begins.
+- Where does the "Open Log" action open: the current `interlinedsync-.log`
+  file directly, or the containing folder? (Folder is safer if the file is
+  rotating.)
+- Should we add an offline-aware delay to push attempts so the channel
+  doesn't back up while paused, or is the existing pause check sufficient?

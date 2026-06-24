@@ -32,6 +32,7 @@ notifier = { path = "../notifier" }
 
 [package.metadata.deb]
 maintainer = "InterlinedList Team <support@interlinedlist.com>"
+maintainer-scripts = "../../packaging/maintainer-scripts"
 copyright = "2026 InterlinedList"
 license-file = ["../../../LICENSE", "0"]
 extended-description = """\

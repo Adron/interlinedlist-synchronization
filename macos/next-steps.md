@@ -2,8 +2,44 @@
 
 ## Current State
 
-Phase 5 (Preferences + Login Item) is complete. `swift test` passes: 112 tests
-(107 unit + 5 live-API integration, which skip without credentials).
+Phase 6 (Conflict Resolution + Error Handling) is complete. `swift test` passes: 149 tests
+(144 unit + 5 live-API integration, which skip without credentials).
+
+### What Phase 6 added
+
+- `Sync/ConflictResolver.swift` — added a pure `ConflictResolver.decide(localChanged:remoteChanged:
+  localExists:remoteExists:) -> ConflictDecision` decision table (`noOp`/`push`/`pull`/`conflictCopy`),
+  separated from the side-effecting `RemoteWinsConflictResolver` (remote-wins + timestamped
+  `<name>.conflict-YYYYMMDDTHHmmss.md` copy, matching the Windows convention)
+- `Sync/DocumentGate.swift` — actor that serializes work per document ID via a per-ID tail-`Task`
+  chain while letting different documents run in parallel; self-prunes idle chains
+- `Sync/SyncEngine.swift` — applies (conflicts/remote/local) now fan out per-document through the
+  gate via `withThrowingTaskGroup` (parallel across docs, serial per doc); conflict detection on
+  push (`remoteIfNewerThanLedger`) reroutes a clobbering `PATCH` to the conflict resolver; offline
+  pause/resume driven by an injected `NetworkMonitoring`; `.authExpired` / `.offline` /
+  `.rateLimited` error routing with `Retry-After`-honoring backoff (exponential + jitter fallback,
+  capped at 300 s)
+- `Network/NetworkMonitor.swift` — `NetworkMonitoring` protocol, `NWPathMonitor`-backed production
+  `NetworkMonitor`, and `StubNetworkMonitor` for deterministic tests
+- `Sync/SyncState.swift` — `SyncError` gains `.authExpired` / `.offline` / `.rateLimited(retryAfter:)`;
+  `SyncStatus` gains `.offline` / `.authExpired`; new `authExpired()` / `wentOffline()` /
+  `cameOnline()` transitions
+- `API/InterlinedListClient.swift` — 401 → `.authExpired`, 403 → `.notAuthenticated`,
+  429 → `.rateLimited` with a `Retry-After` parser (integer seconds or HTTP-date)
+- `Notifications/NotificationManager.swift` — `.auth` category + `notifyAuthExpired()`
+- `MenuBar/StatusItemController.swift` — `.offline` (`wifi.slash`) and `.authExpired`
+  (`exclamationmark.triangle.fill`) labels/icons; Sync Now disabled while offline
+- `App/AppDelegate.swift` — wires the production `NetworkMonitor` into the engine; `.auth`
+  notifications always allowed
+- Tests: `ConflictResolverTests` (11), `NetworkMonitorTests` (5), `DocumentGateTests` (4),
+  `SyncEngineTests` (+8: per-doc parallel, conflict-on-push, authExpired→state+notify, 429 retry,
+  offline pause/resume), `InterlinedListClientTests` (+6: 401/403/429 + Retry-After parsing),
+  `StatusItemControllerTests` (+2), `NotificationManagerTests` (+2); `FakeServer` gained 401/429
+  fault injection
+
+### Earlier state
+
+Phase 5 (Preferences + Login Item) passed at 112 tests (107 unit + 5 live-API integration).
 
 ### What Phase 5 added
 
@@ -94,21 +130,24 @@ bidirectional sync) landed the `SyncEngine` actor, `ChangeSet`, `ConflictResolve
 
 ## Next Phase to Implement
 
-### Phase 6 — Conflict Resolution + Error Handling
-
-1. **`ConflictResolver`** — user-selectable strategy (remote-wins is the current default;
-   consider local-wins and newest-wins); surface the choice in the new Preferences General/Advanced
-   tab so it persists via `PreferencesManager`
-2. **Resilience** — retry/backoff for transient network failures in `SyncEngine`/`InterlinedListClient`;
-   distinguish retryable vs. fatal `SyncError` cases
-3. **Comprehensive `SyncError` mapping** — ensure every surfaced error maps to a user-readable
-   message and the right notification category
-4. **Tests** — conflict-strategy matrix, backoff/retry behavior, error-mapping coverage
-
 ### Phase 7 — Packaging & Distribution
 
 - Code signing, entitlements (the security-scoped bookmark + login item need the App Sandbox
   entitlements once sandboxed), `PrivacyInfo.xcprivacy`, notarization pipeline
+
+### Open follow-ups from Phase 6
+
+- **User-selectable conflict strategy** — only remote-wins ships today. Local-wins / newest-wins
+  could be surfaced in Preferences and persisted via `PreferencesManager`; the `ConflictResolving`
+  seam is already in place.
+- **Conflict edge cases not yet covered**: a local *rename* during a conflict produces a conflict
+  copy under the old filename (the canonical file then moves to the new remote title); simultaneous
+  local-and-remote *delete* is treated as `noOp` by the decision table but the two-tombstone path
+  isn't exercised end-to-end. Both warrant follow-up tests before shipping.
+- **Push-side conflict detection cost**: `remoteIfNewerThanLedger` re-fetches the full document list
+  per pushed edit. Once the API exposes a cheap per-document `HEAD`/`updatedAt` probe, swap it in.
+- **Rate-limit backoff** resets only on the next successful cycle; there is no surfaced countdown in
+  the menu beyond the status string.
 
 ### Open follow-ups from Phase 5
 

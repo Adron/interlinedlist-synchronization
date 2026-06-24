@@ -126,8 +126,12 @@ actor InterlinedListClient: DocumentFetching, DocumentMutating {
         switch http.statusCode {
         case 200...299, 404, 410:
             _ = data
-        case 401, 403:
+        case 401:
+            throw SyncError.authExpired
+        case 403:
             throw SyncError.notAuthenticated
+        case 429:
+            throw SyncError.rateLimited(retryAfter: Self.retryAfter(from: http))
         default:
             throw SyncError.network(URLError(.badServerResponse))
         }
@@ -147,10 +151,39 @@ actor InterlinedListClient: DocumentFetching, DocumentMutating {
         switch http.statusCode {
         case 200...299:
             return (data, http)
-        case 401, 403:
+        case 401:
+            throw SyncError.authExpired
+        case 403:
             throw SyncError.notAuthenticated
+        case 429:
+            throw SyncError.rateLimited(retryAfter: Self.retryAfter(from: http))
         default:
             throw SyncError.network(URLError(.badServerResponse))
         }
     }
+
+    /// Parses a `Retry-After` header as either an integer number of seconds or an HTTP-date,
+    /// returning the delay in seconds. Returns nil when the header is absent or unparseable so the
+    /// caller can fall back to exponential backoff.
+    static func retryAfter(from response: HTTPURLResponse) -> TimeInterval? {
+        guard let raw = response.value(forHTTPHeaderField: "Retry-After")?
+            .trimmingCharacters(in: .whitespaces), !raw.isEmpty else {
+            return nil
+        }
+        if let seconds = TimeInterval(raw) {
+            return max(0, seconds)
+        }
+        if let date = httpDateFormatter.date(from: raw) {
+            return max(0, date.timeIntervalSinceNow)
+        }
+        return nil
+    }
+
+    private static let httpDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(identifier: "GMT")
+        formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
+        return formatter
+    }()
 }
