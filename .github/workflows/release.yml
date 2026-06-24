@@ -288,9 +288,13 @@ jobs:
           if [[ "${{ github.ref_name }}" == *-* ]]; then
             PRERELEASE_FLAG="--prerelease"
           fi
+          # Use find -type f to enumerate only files; the upload-artifact
+          # action preserves the source directory structure inside each
+          # artifact zip (e.g. target/debian/*.deb -> release-artifacts/target/),
+          # and gh release create refuses to upload directories.
           gh release create "${{ github.ref_name }}" \
             --title "InterlinedList Sync ${{ github.ref_name }}" \
             --notes-file release-notes.md \
             --draft \
             $PRERELEASE_FLAG \
-            release-artifacts/*
+            $(find release-artifacts -type f)
