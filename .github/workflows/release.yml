@@ -149,58 +149,14 @@ jobs:
             -Path windows/publish/* `
             -DestinationPath "InterlinedSync-Windows-${{ github.ref_name }}.zip"
 
-      - name: Build MSIX package
-        working-directory: windows
-        shell: pwsh
-        run: |
-          msbuild InterlinedSync.Package\InterlinedSync.Package.wapproj `
-            /p:Configuration=Release `
-            /p:Platform=x64 `
-            /p:AppxBundle=Never `
-            /p:UapAppxPackageBuildMode=SideloadOnly `
-            /p:AppxPackageSigningEnabled=false
-
-      - name: Locate MSIX output
-        id: msix
-        shell: pwsh
-        run: |
-          $msix = Get-ChildItem -Path windows/InterlinedSync.Package/bin/x64/Release -Recurse -Filter "*.msix" | Select-Object -First 1
-          if (-not $msix) {
-            Write-Error "No .msix produced by InterlinedSync.Package.wapproj"
-            exit 1
-          }
-          $dest = "InterlinedSync-Windows-MSIX-${{ github.ref_name }}.msix"
-          Copy-Item -Path $msix.FullName -Destination $dest -Force
-          "msix_path=$dest" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-
-      - name: Detect MSIX signing secrets
-        id: msix_signing
-        shell: pwsh
-        env:
-          PFX_B64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
-        run: |
-          if ([string]::IsNullOrEmpty($env:PFX_B64)) {
-            "have_cert=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          } else {
-            "have_cert=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          }
-
-      - name: Sign MSIX (if cert available)
-        if: steps.msix_signing.outputs.have_cert == 'true'
-        shell: pwsh
-        env:
-          PFX_B64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
-          PFX_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-        run: |
-          $pfxPath = Join-Path $env:RUNNER_TEMP "codesign.pfx"
-          [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:PFX_B64))
-          $signtool = (Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Recurse -Filter "signtool.exe" `
-                       | Where-Object { $_.FullName -match 'x64' } `
-                       | Select-Object -First 1).FullName
-          & $signtool sign /fd SHA256 /a /f $pfxPath /p $env:PFX_PASSWORD `
-            /tr http://timestamp.digicert.com /td SHA256 `
-            "${{ steps.msix.outputs.msix_path }}"
-          Remove-Item $pfxPath -Force
+      # -------------------------------------------------------------------
+      # MSIX packaging deferred from CI: the windows-latest runner's
+      # Windows SDK does not include UAP.props for our target version
+      # (APPX3217 across multiple version values). Build MSIX on a
+      # maintainer machine via Visual Studio for now; revisit once we
+      # standardize on a runner with the right SDK pre-installed.
+      # See windows/PACKAGING.md.
+      # -------------------------------------------------------------------
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
@@ -208,7 +164,6 @@ jobs:
           name: windows-release
           path: |
             InterlinedSync-Windows-${{ github.ref_name }}.zip
-            InterlinedSync-Windows-MSIX-${{ github.ref_name }}.msix
           if-no-files-found: error
           retention-days: 1
 
