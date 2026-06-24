@@ -41,10 +41,13 @@ apps:
 
 parts:
   interlinedlist-sync:
-    plugin: rust
+    plugin: nil
     source: .
-    rust-channel: stable
     # Daemon-only build: tray-app + its GTK/libadwaita deps are excluded.
+    # plugin: nil + override-build avoids the snapcraft rust plugin's
+    # 'snap install rustup' step, which fails inside GitHub-hosted runners.
+    # The rust toolchain is installed by the dtolnay/rust-toolchain action
+    # in the workflow before snapcraft runs.
     build-packages:
       - pkg-config
       - libsecret-1-dev
@@ -56,6 +59,7 @@ parts:
       - libsqlite3-0
     override-build: |
       cd "${CRAFT_PART_SRC}"
+      export PATH="${HOME}/.cargo/bin:${PATH}"
       cargo build --release --package interlinedlist-sync
       install -Dm755 target/release/interlinedlist-sync "${CRAFT_PART_INSTALL}/bin/interlinedlist-sync"
     prime:
