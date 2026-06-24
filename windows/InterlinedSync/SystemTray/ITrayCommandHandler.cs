@@ -7,6 +7,12 @@ namespace InterlinedSync.SystemTray;
 /// </summary>
 public interface ITrayCommandHandler
 {
+    /// <summary>
+    /// Opens the onboarding (sign-in) window. Invoked when the user clicks
+    /// the "Sign in…" tray menu item in the no-credentials state.
+    /// </summary>
+    Task SignInAsync(CancellationToken cancellationToken = default);
+
     Task OpenSyncFolderAsync(CancellationToken cancellationToken = default);
     Task ShowSettingsAsync(CancellationToken cancellationToken = default);
     Task TogglePauseAsync(CancellationToken cancellationToken = default);

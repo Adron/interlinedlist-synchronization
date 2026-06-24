@@ -109,10 +109,13 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Windows — framework-dependent publish (requires .NET 9 Desktop Runtime)
-  # plus an MSIX package built by InterlinedSync.Package.wapproj. The MSIX is
-  # signed when WINDOWS_CERT_PFX_BASE64 + WINDOWS_CERT_PASSWORD secrets exist;
-  # otherwise it ships UNSIGNED (sideload requires developer mode / sideload
-  # license). See windows/PACKAGING.md for the full signing checklist.
+  # PLUS an Inno Setup installer (InterlinedListSync-Setup-<tag>.exe). Both
+  # are uploaded; the installer is the recommended distribution channel and
+  # the .zip remains for users who prefer xcopy deploy. The installer is
+  # signed when WINDOWS_CERT_PFX_BASE64 + WINDOWS_CERT_PASSWORD secrets
+  # exist; otherwise it ships UNSIGNED (SmartScreen will warn on first
+  # install). See windows/PACKAGING.md for the full signing checklist.
+  # MSIX is deferred — see comment further down.
   # ---------------------------------------------------------------------------
   build-windows:
     name: Build Windows
@@ -149,6 +152,86 @@ jobs:
             -Path windows/publish/* `
             -DestinationPath "InterlinedSync-Windows-${{ github.ref_name }}.zip"
 
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Compute installer version
+        id: insver
+        shell: pwsh
+        run: |
+          # Strip a leading 'v' to match Inno's VersionInfoVersion expectations
+          # (Inno tolerates the suffix but the leading 'v' confuses some
+          # Windows VersionInfo consumers).
+          $tag = "${{ github.ref_name }}"
+          $ver = $tag -replace '^v',''
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Detect Windows signing secrets
+        id: winsign
+        shell: pwsh
+        env:
+          PFX_B64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+        run: |
+          if ($env:PFX_B64) {
+            "have_cert=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "have_cert=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+
+      - name: Decode signing certificate
+        if: steps.winsign.outputs.have_cert == 'true'
+        shell: pwsh
+        env:
+          PFX_B64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
+        run: |
+          $bytes = [Convert]::FromBase64String($env:PFX_B64)
+          [IO.File]::WriteAllBytes("$env:RUNNER_TEMP\codesign.pfx", $bytes)
+
+      - name: Compile Inno Setup installer (unsigned)
+        if: steps.winsign.outputs.have_cert != 'true'
+        shell: pwsh
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" `
+            /Qp `
+            /DAppVersion=${{ steps.insver.outputs.version }} `
+            windows/installer/InterlinedSync.iss
+
+      - name: Compile Inno Setup installer (signed)
+        if: steps.winsign.outputs.have_cert == 'true'
+        shell: pwsh
+        env:
+          PFX_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+        run: |
+          # Locate signtool (newest Windows SDK build).
+          $signtool = Get-ChildItem `
+            -Path "C:\Program Files (x86)\Windows Kits\10\bin" `
+            -Recurse -Filter signtool.exe `
+            | Where-Object { $_.FullName -like "*\x64\signtool.exe" } `
+            | Sort-Object FullName -Descending `
+            | Select-Object -First 1
+          if (-not $signtool) {
+            throw "signtool.exe not found on runner."
+          }
+          $pfx = "$env:RUNNER_TEMP\codesign.pfx"
+          # Inno invokes the named SignTool template once per file ($f).
+          $signCmd = "`"$($signtool.FullName)`" sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /f `"$pfx`" /p `"$env:PFX_PASSWORD`" `$f"
+          & "C:\Program Files (x86)\Inno Setup 6\iscc.exe" `
+            /Qp `
+            /DAppVersion=${{ steps.insver.outputs.version }} `
+            /DSignToolConfigured=1 `
+            "/Ssigntool=$signCmd" `
+            windows/installer/InterlinedSync.iss
+
+      - name: Stage installer for upload
+        shell: pwsh
+        run: |
+          # The .iss outputs to windows/installer/Output/. Copy to a flat
+          # location so the upload-artifact glob below picks it up reliably.
+          Copy-Item `
+            -Path "windows/installer/Output/InterlinedListSync-Setup-${{ steps.insver.outputs.version }}.exe" `
+            -Destination "InterlinedListSync-Setup-${{ github.ref_name }}.exe"
+
       # -------------------------------------------------------------------
       # MSIX packaging deferred from CI: the windows-latest runner's
       # Windows SDK does not include UAP.props for our target version
@@ -164,6 +247,7 @@ jobs:
           name: windows-release
           path: |
             InterlinedSync-Windows-${{ github.ref_name }}.zip
+            InterlinedListSync-Setup-${{ github.ref_name }}.exe
           if-no-files-found: error
           retention-days: 1
 
@@ -264,7 +348,8 @@ jobs:
           | Platform | File | Notes |
           |----------|------|-------|
           | macOS 13 Ventura or later | \`InterlinedSync-macOS-${TAG}.zip\` | Unzip and move to \`/Applications\`. Unsigned — right-click → Open to bypass Gatekeeper on first launch. |
-          | Windows 10 / 11 (x64) | \`InterlinedSync-Windows-${TAG}.zip\` | Unzip and run \`InterlinedSync.exe\`. Requires [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0). |
+          | Windows 10 / 11 (x64) — installer | \`InterlinedListSync-Setup-${TAG}.exe\` | Double-click and follow the wizard. Adds a Start Menu entry and optional autostart. Requires [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0). |
+          | Windows 10 / 11 (x64) — portable | \`InterlinedSync-Windows-${TAG}.zip\` | Unzip and run \`InterlinedSync.exe\` for users who prefer no installer. Same runtime prerequisite. |
           | Ubuntu / Debian (amd64) | \`interlinedlist-sync_*.deb\` | \`sudo dpkg -i interlinedlist-sync_*.deb\` |
           | Linux standalone binary | \`InterlinedSync-Linux-${TAG}.tar.gz\` | Extract and place \`interlinedlist-sync\` in your \`\$PATH\`. |
 

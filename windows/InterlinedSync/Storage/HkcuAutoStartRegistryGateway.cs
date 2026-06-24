@@ -5,12 +5,15 @@ using Microsoft.Win32;
 namespace InterlinedSync.Storage;
 
 /// <summary>
-/// Production HKCU\Software\Microsoft\Windows\CurrentVersion\Run gateway.
+/// Production HKCU\Software\Microsoft\Windows\CurrentVersion\Run gateway plus
+/// a small companion key at HKCU\Software\InterlinedSync for app preference
+/// flags (currently only the "don't ask again" toggle for the startup prompt).
 /// </summary>
 [SupportedOSPlatform("windows")]
 internal sealed class HkcuAutoStartRegistryGateway : IAutoStartRegistryGateway
 {
     internal const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    internal const string PreferencesKeyPath = @"Software\InterlinedSync";
 
     public string? ReadValue(string name)
     {
@@ -30,6 +33,25 @@ internal sealed class HkcuAutoStartRegistryGateway : IAutoStartRegistryGateway
         using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
         key?.DeleteValue(name, throwOnMissingValue: false);
     }
+
+    public int? ReadPreferenceFlag(string name)
+    {
+        using var key = Registry.CurrentUser.OpenSubKey(PreferencesKeyPath, writable: false);
+        var raw = key?.GetValue(name);
+        return raw switch
+        {
+            int i => i,
+            string s when int.TryParse(s, out var parsed) => parsed,
+            _ => null,
+        };
+    }
+
+    public void WritePreferenceFlag(string name, int value)
+    {
+        using var key = Registry.CurrentUser.CreateSubKey(PreferencesKeyPath, writable: true)
+            ?? throw new InvalidOperationException("Could not open HKCU\\Software\\InterlinedSync key.");
+        key.SetValue(name, value, RegistryValueKind.DWord);
+    }
 }
 #else
 namespace InterlinedSync.Storage;
@@ -44,5 +66,7 @@ internal sealed class HkcuAutoStartRegistryGateway : IAutoStartRegistryGateway
     public string? ReadValue(string name) => null;
     public void WriteValue(string name, string value) { }
     public void DeleteValue(string name) { }
+    public int? ReadPreferenceFlag(string name) => null;
+    public void WritePreferenceFlag(string name, int value) { }
 }
 #endif

@@ -17,6 +17,7 @@ namespace InterlinedSync.Storage;
 public sealed class RegistryAutoStartManager : IAutoStartManager
 {
     internal const string ValueName = "InterlinedSync";
+    internal const string StartupPromptSuppressedFlag = "StartupPromptSuppressed";
 
     private readonly IAutoStartRegistryGateway _gateway;
     private readonly ILogger<RegistryAutoStartManager> _logger;
@@ -76,6 +77,68 @@ public sealed class RegistryAutoStartManager : IAutoStartManager
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to write auto-start registry value.");
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task<bool> IsManagedByInstallerAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var value = _gateway.ReadValue(ValueName);
+            if (string.IsNullOrEmpty(value))
+            {
+                return Task.FromResult(false);
+            }
+
+            // The value is stored as a quoted path; strip enclosing quotes
+            // before matching against the Program Files install location.
+            var trimmed = value.Trim();
+            if (trimmed.Length >= 2 && trimmed[0] == '"' && trimmed[^1] == '"')
+            {
+                trimmed = trimmed[1..^1];
+            }
+
+            var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
+
+            var underInstallRoot =
+                (!string.IsNullOrEmpty(programFiles) && trimmed.StartsWith(programFiles, StringComparison.OrdinalIgnoreCase))
+                || (!string.IsNullOrEmpty(programFilesX86) && trimmed.StartsWith(programFilesX86, StringComparison.OrdinalIgnoreCase));
+
+            return Task.FromResult(underInstallRoot);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not classify auto-start registry value origin.");
+            return Task.FromResult(false);
+        }
+    }
+
+    public Task<bool> IsStartupPromptSuppressedAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var flag = _gateway.ReadPreferenceFlag(StartupPromptSuppressedFlag);
+            return Task.FromResult(flag is > 0);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Could not read startup-prompt-suppressed flag.");
+            return Task.FromResult(false);
+        }
+    }
+
+    public Task SetStartupPromptSuppressedAsync(bool suppressed, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            _gateway.WritePreferenceFlag(StartupPromptSuppressedFlag, suppressed ? 1 : 0);
+            _logger.LogInformation("Startup prompt suppressed flag set to {Value}.", suppressed);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to persist startup-prompt-suppressed flag.");
         }
         return Task.CompletedTask;
     }

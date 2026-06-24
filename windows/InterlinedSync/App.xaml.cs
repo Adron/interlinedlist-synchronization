@@ -6,6 +6,7 @@ using InterlinedSync.Configuration;
 using InterlinedSync.Storage;
 using InterlinedSync.Sync;
 using InterlinedSync.SystemTray;
+using InterlinedSync.UI;
 using InterlinedSync.UI.ViewModels;
 using InterlinedSync.UI.Views;
 using Microsoft.Extensions.DependencyInjection;
@@ -17,20 +18,26 @@ namespace InterlinedSync;
 
 /// <summary>
 /// WPF entry point. Hosts the <see cref="IHost"/> built by <see cref="Program"/>
-/// and drives the start-up flow: if no token is present we show the onboarding
-/// window; once signed in we hand off to the tray controller.
+/// and drives the start-up flow: the tray comes up first (so the signed-out icon
+/// is visible immediately), then — if no token is in Credential Manager — the
+/// onboarding window is shown. Either way the user can later re-open the
+/// onboarding window via the tray "Sign in…" menu item.
 /// </summary>
 public partial class App : Application, ITrayCommandHandler
 {
     private IHost? _host;
     private TrayIconController? _tray;
     private SettingsWindow? _settingsWindow;
+    private OnboardingWindow? _onboardingWindow;
+    private StartupPromptDialog? _startupPromptDialog;
     private ILogger<App>? _logger;
+    private string[] _launchArgs = Array.Empty<string>();
 
     protected override async void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
-        _host = Program.BuildHost(e.Args);
+        _launchArgs = e.Args ?? Array.Empty<string>();
+        _host = Program.BuildHost(_launchArgs);
         await _host.StartAsync().ConfigureAwait(true);
 
         _logger = _host.Services.GetRequiredService<ILogger<App>>();
@@ -40,32 +47,130 @@ public partial class App : Application, ITrayCommandHandler
         var notifier = _host.Services.GetRequiredService<ISyncStateNotifier>();
 
         var token = await auth.GetTokenAsync().ConfigureAwait(true);
-        if (string.IsNullOrEmpty(token))
+        var signedIn = !string.IsNullOrEmpty(token);
+
+        // Seed the initial state before the tray subscribes so the very first
+        // icon paint matches reality (signed-out shows the error icon, signed-in
+        // shows the idle icon).
+        notifier.SetState(signedIn ? SyncState.Idle : SyncState.SignedOut);
+
+        // The tray is brought up unconditionally — this is the user's only
+        // re-entry point if they dismiss the onboarding window without signing
+        // in. The tray menu's "Sign in…" item is enabled in this state.
+        InitializeTray();
+
+        if (!signedIn)
         {
-            notifier.SetState(SyncState.SignedOut);
-            if (!ShowOnboardingWindow())
-            {
-                Shutdown();
-                return;
-            }
+            _logger.LogInformation("No token in Credential Manager; presenting onboarding window.");
+            ShowOnboardingWindow();
+            // Skip the startup prompt entirely when signed-out — the user
+            // hasn't even authenticated yet; pestering them about autostart
+            // would be off-putting. We'll re-evaluate the next launch.
+            return;
         }
 
-        notifier.SetState(SyncState.Idle);
-        InitializeTray();
+        // Workstream B: one-time "run at startup?" prompt. Non-modal, fire-
+        // and-forget — the tray and sync loop are already live so the prompt
+        // never blocks anything. Skip when the installer auto-launched us,
+        // when the user already opted out, or when the Run entry exists.
+        _ = MaybeShowStartupPromptAsync();
     }
 
-    private bool ShowOnboardingWindow()
+    /// <summary>
+    /// Shows the onboarding window (modal). Safe to call from any state:
+    /// if a window is already visible it is just activated. On a successful
+    /// sign-in the sync state is flipped to <see cref="SyncState.Idle"/>.
+    /// </summary>
+    private void ShowOnboardingWindow()
     {
         if (_host is null)
         {
-            return false;
+            return;
         }
 
-        var vm = _host.Services.GetRequiredService<OnboardingViewModel>();
-        var prefs = _host.Services.GetRequiredService<Storage.IPreferencesStore>();
-        var window = new OnboardingWindow(vm, prefs);
-        var result = window.ShowDialog();
-        return result == true;
+        Dispatcher.Invoke(() =>
+        {
+            if (_onboardingWindow is { IsLoaded: true } existing)
+            {
+                existing.Activate();
+                return;
+            }
+
+            var vm = _host.Services.GetRequiredService<OnboardingViewModel>();
+            var prefs = _host.Services.GetRequiredService<IPreferencesStore>();
+            var window = new OnboardingWindow(vm, prefs);
+            _onboardingWindow = window;
+            window.Closed += (_, _) =>
+            {
+                var succeeded = window.DialogResult == true;
+                if (ReferenceEquals(_onboardingWindow, window))
+                {
+                    _onboardingWindow = null;
+                }
+                if (succeeded)
+                {
+                    var notifier = _host.Services.GetRequiredService<ISyncStateNotifier>();
+                    notifier.SetState(SyncState.Idle);
+                    // Now that the user is signed in, re-evaluate whether to
+                    // surface the autostart prompt. Fire-and-forget — the
+                    // prompt itself is non-modal.
+                    _ = MaybeShowStartupPromptAsync();
+                }
+            };
+            window.ShowDialog();
+        });
+    }
+
+    /// <summary>
+    /// Evaluates the startup-prompt rules via
+    /// <see cref="StartupPromptDecisionService"/> and, if the conditions hold,
+    /// pops the <see cref="StartupPromptDialog"/>. Safe to call multiple times —
+    /// only one dialog is alive at a time, and after the user picks any option
+    /// the rules will short-circuit subsequent calls.
+    /// </summary>
+    private async Task MaybeShowStartupPromptAsync()
+    {
+        if (_host is null)
+        {
+            return;
+        }
+
+        try
+        {
+            var decision = _host.Services.GetRequiredService<StartupPromptDecisionService>();
+            var shouldPrompt = await decision.ShouldPromptAsync(_launchArgs).ConfigureAwait(true);
+            if (!shouldPrompt)
+            {
+                return;
+            }
+
+            Dispatcher.Invoke(() =>
+            {
+                if (_startupPromptDialog is { IsLoaded: true } existing)
+                {
+                    existing.Activate();
+                    return;
+                }
+
+                var vm = _host.Services.GetRequiredService<StartupPromptViewModel>();
+                var dialog = new StartupPromptDialog(vm);
+                _startupPromptDialog = dialog;
+                dialog.Closed += (_, _) =>
+                {
+                    if (ReferenceEquals(_startupPromptDialog, dialog))
+                    {
+                        _startupPromptDialog = null;
+                    }
+                };
+                // Non-modal: Show() not ShowDialog(). Tray + sync engine
+                // continue running underneath while the user decides.
+                dialog.Show();
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(ex, "Could not evaluate startup prompt.");
+        }
     }
 
     private void InitializeTray()
@@ -80,6 +185,13 @@ public partial class App : Application, ITrayCommandHandler
         var logger = _host.Services.GetRequiredService<ILogger<TrayIconController>>();
         _tray = new TrayIconController(notifier, menuBuilder, this, logger);
         _tray.Initialize();
+    }
+
+    public Task SignInAsync(CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation("Tray Sign-in invoked.");
+        ShowOnboardingWindow();
+        return Task.CompletedTask;
     }
 
     public Task OpenSyncFolderAsync(CancellationToken cancellationToken = default)
@@ -154,17 +266,10 @@ public partial class App : Application, ITrayCommandHandler
         var notifier = _host.Services.GetRequiredService<ISyncStateNotifier>();
         notifier.SetState(SyncState.SignedOut);
 
-        Dispatcher.Invoke(() =>
-        {
-            if (ShowOnboardingWindow())
-            {
-                notifier.SetState(SyncState.Idle);
-            }
-            else
-            {
-                Shutdown();
-            }
-        });
+        // After sign-out the tray stays alive in its signed-out state. Surface
+        // the onboarding window once so the user can re-authenticate; if they
+        // dismiss it the tray's "Sign in…" entry is still the way back in.
+        Dispatcher.Invoke(ShowOnboardingWindow);
     }
 
     public Task ExitAsync(CancellationToken cancellationToken = default)

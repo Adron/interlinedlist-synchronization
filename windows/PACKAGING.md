@@ -1,34 +1,111 @@
 # InterlinedList Sync — Windows Packaging
 
-Two distribution channels are produced by `.github/workflows/release.yml`:
+The primary Windows distribution channel is now an **Inno Setup installer**
+(`InterlinedListSync-Setup-<tag>.exe`). MSIX remains supported in the
+project files but is deferred from CI until a runner with the matching UAP
+SDK is available — see "MSIX status" near the bottom.
+
+## Artifacts produced by `.github/workflows/release.yml`
 
 | Artifact | Purpose | Install command |
 |----------|---------|-----------------|
-| `InterlinedSync-Windows-<tag>.zip` | Framework-dependent xcopy build (requires .NET 9 Desktop Runtime pre-installed). | Unzip and run `InterlinedSync.exe`. |
-| `InterlinedSync-Windows-MSIX-<tag>.msix` | MSIX package built by `InterlinedSync.Package.wapproj`. Honours the manifest `startupTask` so auto-start is registered via the Task Scheduler bridge when packaged. | `Add-AppxPackage -Path InterlinedSync-Windows-MSIX-<tag>.msix` |
+| `InterlinedListSync-Setup-<tag>.exe` | **Primary.** Inno Setup installer. Adds Start Menu shortcut, optional auto-start via HKCU Run, finish-page launch checkbox, registered uninstaller. Requires the .NET 9 Desktop Runtime. | Double-click and follow the wizard. |
+| `InterlinedSync-Windows-<tag>.zip` | **Secondary.** Framework-dependent xcopy build for users who prefer no installer. | Unzip and run `InterlinedSync.exe`. |
 
-## GitHub Actions secrets
+Both artifacts are framework-dependent (the .NET 9 Desktop Runtime is a
+prerequisite — the installer does not yet bundle it). A self-contained
+variant is on the backlog.
+
+## Building locally
+
+See `windows/installer/README.md` for the full local build flow. The short
+version:
+
+```powershell
+# From the repository root.
+dotnet publish windows/InterlinedSync/InterlinedSync.csproj `
+  -c Release -r win-x64 --self-contained false -o windows/publish
+iscc /Qp windows/installer/InterlinedSync.iss /DAppVersion=0.2.0
+```
+
+The output is at `windows/installer/Output/InterlinedListSync-Setup-0.2.0.exe`.
+
+## Installer behavior summary
+
+| Page | Default | Effect |
+|------|---------|--------|
+| Tasks: Create Start Menu shortcut | checked | Adds `Start Menu → InterlinedList Sync` shortcut. |
+| Tasks: Start automatically when Windows starts | checked | Writes `HKCU\Software\Microsoft\Windows\CurrentVersion\Run\InterlinedSync` pointing at the installed exe. |
+| Finish: Launch InterlinedList Sync | checked | Launches the app with `--from-installer` so the app's one-time autostart prompt is skipped on this very first run. |
+
+The app's own one-time startup prompt (`StartupPromptDialog`) appears on
+*subsequent* launches when the autostart task was unchecked, asking the user
+if they'd like to opt in after all. Picking "Don't ask again" writes
+`HKCU\Software\InterlinedSync\StartupPromptSuppressed = 1` so the prompt
+stays hidden.
+
+## Uninstall
+
+- Removes the application files.
+- Removes the Start Menu shortcut.
+- Removes ONLY the installer's `HKCU\...\Run\InterlinedSync` value (other
+  apps' Run entries are not touched).
+- **PRESERVES** the user's sync folder, Windows Credential Manager entries,
+  `appsettings.json`, and log files. Reinstalling picks them back up.
+
+## Code-signing (CI)
+
+Same secrets as the MSIX scaffold:
 
 | Secret | Required for | How to obtain |
 |--------|--------------|---------------|
-| `WINDOWS_CERT_PFX_BASE64` | MSIX code signing in CI | Base64-encode your `.pfx`: `[Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))` and paste into the repo secret. |
-| `WINDOWS_CERT_PASSWORD` | MSIX code signing in CI | Password protecting the `.pfx`. |
+| `WINDOWS_CERT_PFX_BASE64` | Signing the installer EXE in CI. | Base64-encode your `.pfx`: `[Convert]::ToBase64String([IO.File]::ReadAllBytes("cert.pfx"))`. |
+| `WINDOWS_CERT_PASSWORD` | Password for the `.pfx`. | — |
 
-When both secrets are set, the workflow's "Sign MSIX (if cert available)" step runs `signtool sign` with SHA-256 + RFC 3161 timestamp. When either is absent, the step is skipped and an **unsigned** `.msix` is uploaded — useful for internal testing but it will refuse to install on stock Windows unless the host has developer mode enabled or a sideload licence applied.
+When both secrets are present, the release workflow's "Sign installer (if
+cert available)" step runs `signtool sign` with SHA-256 + RFC 3161
+timestamp on the installer EXE. When either is absent, the step is skipped
+and an **unsigned** installer ships — fine for internal testing but
+SmartScreen will warn on first install until the cert is in place.
 
 ### Acquiring a code-signing certificate
 
-Production releases need an EV (Extended Validation) code-signing certificate from a public CA (DigiCert, Sectigo, GlobalSign). EV certs:
+Production releases need an EV (Extended Validation) code-signing
+certificate from a public CA (DigiCert, Sectigo, GlobalSign). EV certs:
 
-- Suppress the SmartScreen warning immediately on first install (non-EV needs reputation to accrue first).
+- Suppress the SmartScreen warning immediately on first install (non-EV
+  needs reputation to accrue first).
 - Cost ~US$300–500/year.
-- Are usually issued on a hardware token; you'll need to export the `.pfx` (or use Azure Key Vault + `AzureSignTool`) to consume them in CI.
+- Are usually issued on a hardware token; you'll need to export the `.pfx`
+  (or use Azure Key Vault + `AzureSignTool`) to consume them in CI.
 
-For internal testing only, a self-signed cert created via `New-SelfSignedCertificate` works — but every test machine must trust that cert first (`Import-Certificate -CertStoreLocation Cert:\LocalMachine\TrustedPeople`).
+For internal testing only, a self-signed cert created via
+`New-SelfSignedCertificate` works — but every test machine must trust that
+cert first (`Import-Certificate -CertStoreLocation Cert:\LocalMachine\TrustedPeople`).
 
-### Updating the manifest after signing
+## MSIX status (deferred)
 
-`InterlinedSync.Package/Package.appxmanifest` currently ships with `Publisher="CN=InterlinedSync (UNSIGNED PLACEHOLDER)"`. The `Publisher` attribute **must exactly match** the `Subject` of the signing certificate, otherwise `signtool sign` will refuse to attach the signature to the MSIX. Update the line before the first signed build, e.g.:
+`InterlinedSync.Package/` still holds the MSIX wapproj for a future
+revival. It is not built in CI today because the `windows-latest` runner's
+Windows SDK does not include UAP.props for our target version (APPX3217
+across multiple version values).
+
+Revive it by either:
+
+- Standardizing on a self-hosted runner with the matching SDK installed, or
+- Switching to a Microsoft Store submission so the runtime is provisioned
+  via the Store (which sidesteps the EV-cert requirement too).
+
+When that happens, both the `.exe` installer and the `.msix` package can
+ship side-by-side; users on Windows 10 1903+ can pick whichever they
+prefer.
+
+### Manifest publisher (for the eventual MSIX revival)
+
+`InterlinedSync.Package/Package.appxmanifest` currently ships with
+`Publisher="CN=InterlinedSync (UNSIGNED PLACEHOLDER)"`. The `Publisher`
+attribute **must exactly match** the `Subject` of the signing certificate.
+Update the line before the first signed MSIX build, e.g.:
 
 ```xml
 <Identity Name="com.interlinedlist.Sync"
@@ -36,37 +113,11 @@ For internal testing only, a self-signed cert created via `New-SelfSignedCertifi
           Version="1.0.0.0" />
 ```
 
-## Testing the MSIX locally
-
-```powershell
-# Build
-cd windows
-msbuild InterlinedSync.Package\InterlinedSync.Package.wapproj `
-  /p:Configuration=Release /p:Platform=x64 `
-  /p:UapAppxPackageBuildMode=SideloadOnly /p:AppxPackageSigningEnabled=false
-
-# The output is at:
-#   windows\InterlinedSync.Package\bin\x64\Release\AppPackages\...\*.msix
-
-# Install (requires developer mode or a sideload licence for unsigned packages):
-Add-AppxPackage -Path .\InterlinedSync.Package\bin\x64\Release\AppPackages\<...>.msix
-
-# Uninstall:
-Get-AppxPackage com.interlinedlist.Sync | Remove-AppxPackage
-```
-
-Enabling developer mode: **Settings → Privacy & security → For developers → Developer Mode**. This is required for any unsigned MSIX install on Windows 10/11.
-
-## MSIX requirements and constraints
-
-- `Package.appxmanifest` declares `runFullTrust` (the WPF host needs arbitrary filesystem access for the user-chosen sync folder) and `internetClient` (HTTPS to interlinedlist.com).
-- `TargetDeviceFamily` is `Windows.Desktop` with `MinVersion="10.0.19041.0"` (Win10 2004) — matches the .NET TFM.
-- `Resources` is `x-generate` — no localization yet; English-only.
-- The `startupTask` extension registers the app for auto-start via Task Scheduler when packaged. The unpackaged `.exe` build cannot use this extension and falls back to the HKCU `Run` key (see `RegistryAutoStartManager`).
-
 ## Open items before first signed release
 
-- [ ] Replace `Publisher` placeholder with the real cert subject (see above).
-- [ ] Bump `Version="0.1.0.0"` to match the git tag.
-- [ ] Add Store assets at the correct sizes — currently `Assets\StoreLogo.png` and friends are placeholders; replace with the final artwork (Square44x44, Square150x150, Wide310x150, StoreLogo at 50×50).
-- [ ] Decide between sideloaded MSIX (current) and Microsoft Store submission. The latter unlocks Auto-updates via the Store and removes the EV-cert requirement (Store certs are issued for free per submission).
+- [ ] Procure the EV code-signing certificate and load it into
+  `WINDOWS_CERT_PFX_BASE64` / `WINDOWS_CERT_PASSWORD` secrets.
+- [ ] Run through the manual smoke-test checklist in
+  `windows/installer/README.md`.
+- [ ] (Deferred) Replace MSIX `Publisher` placeholder + bump the package
+  version + ship Store-quality assets.

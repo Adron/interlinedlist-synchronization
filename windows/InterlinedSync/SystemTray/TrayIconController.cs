@@ -36,13 +36,18 @@ public sealed class TrayIconController : IDisposable
         _logger = logger;
 
         var baseDir = AppContext.BaseDirectory;
+        // SignedOut + AuthExpired share the error/warning icon so the user has a
+        // visual cue that the app needs them to sign in. Offline reuses the error
+        // icon for the same reason.
         _iconPaths = new Dictionary<SyncState, string>
         {
             [SyncState.Idle] = Path.Combine(baseDir, "Assets", "tray-idle.ico"),
             [SyncState.Syncing] = Path.Combine(baseDir, "Assets", "tray-syncing.ico"),
             [SyncState.Error] = Path.Combine(baseDir, "Assets", "tray-error.ico"),
             [SyncState.Paused] = Path.Combine(baseDir, "Assets", "tray-paused.ico"),
-            [SyncState.SignedOut] = Path.Combine(baseDir, "Assets", "tray-idle.ico"),
+            [SyncState.SignedOut] = Path.Combine(baseDir, "Assets", "tray-error.ico"),
+            [SyncState.AuthExpired] = Path.Combine(baseDir, "Assets", "tray-error.ico"),
+            [SyncState.Offline] = Path.Combine(baseDir, "Assets", "tray-error.ico"),
         };
     }
 
@@ -116,6 +121,9 @@ public sealed class TrayIconController : IDisposable
         {
             switch (command)
             {
+                case TrayCommand.SignIn:
+                    await _commandHandler.SignInAsync().ConfigureAwait(false);
+                    break;
                 case TrayCommand.OpenSyncFolder:
                     await _commandHandler.OpenSyncFolderAsync().ConfigureAwait(false);
                     break;

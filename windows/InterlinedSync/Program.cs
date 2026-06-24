@@ -9,6 +9,7 @@ using InterlinedSync.Notifications;
 using InterlinedSync.Storage;
 using InterlinedSync.Sync;
 using InterlinedSync.SystemTray;
+using InterlinedSync.UI;
 using InterlinedSync.UI.ViewModels;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -156,5 +157,7 @@ public static class Program
         services.AddTransient<OnboardingViewModel>();
         services.AddTransient<SettingsViewModel>();
         services.AddTransient<SyncStatusViewModel>();
+        services.AddTransient<StartupPromptViewModel>();
+        services.AddSingleton<StartupPromptDecisionService>();
     }
 }

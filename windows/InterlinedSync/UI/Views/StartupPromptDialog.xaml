@@ -1,0 +1,51 @@
+<Window x:Class="InterlinedSync.UI.Views.StartupPromptDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Start with Windows?"
+        Width="420" Height="220"
+        WindowStartupLocation="CenterScreen"
+        ResizeMode="NoResize"
+        ShowInTaskbar="True"
+        Topmost="False">
+    <Grid Margin="24">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Text="Run InterlinedList Sync automatically when you sign in?"
+                   FontSize="15"
+                   FontWeight="SemiBold"
+                   TextWrapping="Wrap"
+                   Margin="0,0,0,12" />
+
+        <TextBlock Grid.Row="1"
+                   TextWrapping="Wrap"
+                   Foreground="#555555"
+                   Text="InterlinedList Sync keeps your documents in sync in the background. We can register it to start with Windows so syncing resumes automatically. You can change this later in Settings." />
+
+        <StackPanel Grid.Row="2"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,16,0,0">
+            <Button Content="Don't ask again"
+                    Width="120"
+                    Margin="0,0,8,0"
+                    IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}"
+                    Command="{Binding DontAskAgainCommand}" />
+            <Button Content="No"
+                    Width="80"
+                    Margin="0,0,8,0"
+                    IsCancel="True"
+                    IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}"
+                    Command="{Binding NoCommand}" />
+            <Button Content="Yes"
+                    Width="80"
+                    IsDefault="True"
+                    IsEnabled="{Binding IsBusy, Converter={StaticResource InverseBoolConverter}}"
+                    Command="{Binding YesCommand}" />
+        </StackPanel>
+    </Grid>
+</Window>

@@ -3,6 +3,7 @@ using FluentAssertions;
 using InterlinedSync.API;
 using InterlinedSync.API.Models;
 using InterlinedSync.Configuration;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using RichardSzalay.MockHttp;
@@ -23,6 +24,21 @@ public class InterlinedListClientTests
         });
         var client = new InterlinedListClient(httpClient, options, NullLogger<InterlinedListClient>.Instance);
         return (client, handler);
+    }
+
+    private static (InterlinedListClient client, MockHttpMessageHandler handler, List<string> logs) BuildWithCapturingLogger()
+    {
+        var handler = new MockHttpMessageHandler();
+        var httpClient = handler.ToHttpClient();
+        var options = Options.Create(new ApiOptions
+        {
+            BaseUrl = "https://interlinedlist.example",
+            LoginEndpoint = "/api/auth/sync-token",
+        });
+        var logs = new List<string>();
+        var logger = new ListLogger<InterlinedListClient>(logs);
+        var client = new InterlinedListClient(httpClient, options, logger);
+        return (client, handler, logs);
     }
 
     [Fact]
@@ -83,6 +99,82 @@ public class InterlinedListClientTests
         var (client, _) = Build();
         var act = async () => await client.LoginAsync(username, password);
         await act.Should().ThrowAsync<ArgumentException>();
+    }
+
+    [Fact]
+    public async Task LoginAsync_DoesNotLogPassword_OnSuccess()
+    {
+        var (client, handler, logs) = BuildWithCapturingLogger();
+        handler.When(HttpMethod.Post, "*/api/auth/sync-token")
+               .Respond("application/json", "{\"token\":\"il_tok_abc\"}");
+        const string secret = "very-secret-password-abc123";
+
+        await client.LoginAsync("alice@example.com", secret);
+
+        logs.Should().NotContain(line => line.Contains(secret, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task LoginAsync_DoesNotLogPassword_OnFailure()
+    {
+        var (client, handler, logs) = BuildWithCapturingLogger();
+        handler.When(HttpMethod.Post, "*/api/auth/sync-token")
+               .Respond(HttpStatusCode.Unauthorized);
+        const string secret = "very-secret-password-xyz789";
+
+        var act = async () => await client.LoginAsync("alice@example.com", secret);
+        await act.Should().ThrowAsync<ApiException>();
+
+        logs.Should().NotContain(line => line.Contains(secret, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task LoginAsync_DoesNotLogPassword_OnNetworkFailure()
+    {
+        var (client, handler, logs) = BuildWithCapturingLogger();
+        handler.When(HttpMethod.Post, "*/api/auth/sync-token")
+               .Throw(new HttpRequestException("offline"));
+        const string secret = "very-secret-password-net000";
+
+        var act = async () => await client.LoginAsync("alice@example.com", secret);
+        await act.Should().ThrowAsync<ApiException>();
+
+        logs.Should().NotContain(line => line.Contains(secret, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// Tiny ILogger that captures rendered log messages so tests can assert that
+    /// sensitive fields like the user's password never appear in any log line.
+    /// </summary>
+    private sealed class ListLogger<T> : ILogger<T>
+    {
+        private readonly List<string> _sink;
+
+        public ListLogger(List<string> sink) => _sink = sink;
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => NullScope.Instance;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel,
+            EventId eventId,
+            TState state,
+            Exception? exception,
+            Func<TState, Exception?, string> formatter)
+        {
+            _sink.Add(formatter(state, exception));
+            if (exception is not null)
+            {
+                _sink.Add(exception.ToString());
+            }
+        }
+
+        private sealed class NullScope : IDisposable
+        {
+            public static readonly NullScope Instance = new();
+            public void Dispose() { }
+        }
     }
 
     [Fact]

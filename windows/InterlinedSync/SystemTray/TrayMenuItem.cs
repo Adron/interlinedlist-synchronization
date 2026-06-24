@@ -11,6 +11,7 @@ public sealed record TrayMenuItem(
 
 public enum TrayCommand
 {
+    SignIn,
     OpenSyncFolder,
     Settings,
     TogglePause,
