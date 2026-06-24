@@ -65,6 +65,11 @@ struct TrayShared {
     /// True when the user has paused sync manually.
     paused: bool,
     /// Fires when sign-in succeeds; the daemon listens on the other end.
+    /// Only read from the GTK sign-in callback (`open_signin`). Without the
+    /// `gtk` feature there is no GUI sign-in, so the daemon relies solely on
+    /// its secret-store poll and this sender is intentionally never fired —
+    /// allow the resulting dead field in that build configuration.
+    #[cfg_attr(not(feature = "gtk"), allow(dead_code))]
     credentials_ready_tx: Option<tokio::sync::oneshot::Sender<()>>,
 }
 
