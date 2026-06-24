@@ -1,19 +1,129 @@
-# InterlinedList Synchronization — Windows (`windows/`)
+# InterlinedList Sync — Windows
 
-The idea behind the application being developed for Windows is a synchronization tool for the Documents Feature of the web app at https://interlinedlist.com. The documentation is available at https://interlinedlist.com/help/documents and the API that can be used for synchronization is https://interlinedlist.com/help/api. The application will allow users to synchronize their documents between their local machine and the web app, ensuring that they have access to their documents from anywhere and that any changes made locally are reflected in the web app. The synchronization process will be designed to be efficient and user-friendly, providing a seamless experience for users of the Documents Feature.
+A native Windows notification-area (system tray) application that bidirectionally syncs your
+[InterlinedList](https://interlinedlist.com) documents to a local folder.
+It runs as a background process, surfaces controls through a tray context menu, and sends
+toast notifications for sync events.
 
-The synchronization tool needs to sit with the system tray of the operating system, allowing users to easily access it and manage their document synchronization. The tool will run in the background, continuously monitoring for changes in the local documents and syncing them with the web app as needed. Users will be able to configure the synchronization settings, such as which folders to sync and how often to check for changes. The tool will also provide notifications to inform users of successful synchronizations or any issues that may arise during the process. Overall, this application aims to enhance the user experience by providing a convenient and efficient way to keep their documents up-to-date across all platforms.
+**Minimum requirement:** Windows 10 build 19041 (version 2004)
 
-The synchronization tool should be a native application built with the specific operating system in mind. The stack for each respective operating system should be able to be used to build out the following features:
+**Stack:** C# 13 / .NET 9, WPF, `Hardcodet.Wpf.TaskbarNotification` (tray icon),
+Windows App SDK (toasts), `System.IO.FileSystemWatcher` (file watching),
+`System.Net.Http.HttpClient` (API), Windows Credential Manager (token storage),
+SQLite (sync state)
 
-- System tray integration: The application should be able to sit in the system tray, allowing users to easily access it and manage their document synchronization.
-- Background synchronization: The application should continuously monitor for changes in the local documents and sync them with the web app as needed.
-- Configuration options: Users should be able to configure the synchronization settings, such as which folders to sync and how often to check for changes.
-- Notifications: The application should provide notifications to inform users of successful synchronizations or any issues that may arise during the process.
-- Error handling: The application should be able to handle any errors that may occur during the synchronization process and provide appropriate feedback to the user.
-- Security: The application should ensure that the synchronization process is secure, protecting user data and preventing unauthorized access.
-- User-friendly interface: The application should have a user-friendly interface that allows users to easily manage their document synchronization and access their documents from the web app.
-- Performance: The application should be optimized for performance, ensuring that the synchronization process is efficient and does not consume excessive system resources.
-- Scalability: The application should be designed to handle a large number of documents and users, ensuring that it can scale as the user base grows.
-- Regular updates: The application should be regularly updated to fix any bugs, improve performance, and add new features based on user feedback and evolving needs.
-- Documentation: The application should have comprehensive documentation that provides users with clear instructions on how to use the synchronization tool, troubleshoot common issues, and understand the features and capabilities of the application. This documentation should be easily accessible within the application and online for reference.
+## Install
+
+> **Note:** Signed, distributable installers are not yet available. The GitHub Releases page will
+> list an MSIX package and a framework-dependent ZIP when v1.0 ships.
+
+When releases are available, download `InterlinedSync-Windows-MSIX-<tag>.msix` from the
+[Releases](https://github.com/Adron/interlinedlist-synchronization/releases) page and run:
+
+```powershell
+Add-AppxPackage -Path .\InterlinedSync-Windows-MSIX-<tag>.msix
+```
+
+A framework-dependent ZIP (`InterlinedSync-Windows-<tag>.zip`) is also available for users
+who prefer xcopy deployment (requires the [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0)
+pre-installed).
+
+<details>
+<summary>SmartScreen warning for unsigned builds</summary>
+
+Unsigned MSIX packages trigger a SmartScreen warning. To install an unsigned package, enable
+**Developer Mode** in **Settings → Privacy & security → For developers → Developer Mode**,
+then re-run the `Add-AppxPackage` command.
+
+Signed packages from the Releases page with an EV code-signing certificate do not show this
+warning.
+
+</details>
+
+<details>
+<summary>.NET 9 Desktop Runtime requirement (ZIP build only)</summary>
+
+The ZIP (framework-dependent) build does not bundle the .NET runtime.
+Download and install the
+[.NET 9 Desktop Runtime](https://dotnet.microsoft.com/en-us/download/dotnet/9.0)
+before launching `InterlinedSync.exe`. The MSIX build is self-contained and does not have
+this requirement.
+
+</details>
+
+## Build from source
+
+**Prerequisites:** .NET 9 SDK, Visual Studio 2022 with the **.NET desktop development** workload
+(or JetBrains Rider).
+
+```bash
+# Clone the repo
+git clone https://github.com/Adron/interlinedlist-synchronization.git
+cd interlinedlist-synchronization
+
+# Build (Release configuration)
+dotnet build windows/InterlinedSync.sln -c Release
+
+# Run
+dotnet run --project windows/InterlinedSync -c Release
+```
+
+To build the MSIX package locally, see [PACKAGING.md](PACKAGING.md).
+
+## First run
+
+1. Launch **InterlinedSync.exe** (or install via MSIX).
+2. An onboarding window opens. Enter your InterlinedList email and password and click **Sign In**.
+3. Choose a local folder to sync into (default: `%USERPROFILE%\InterlinedList Sync`).
+4. The tray icon appears in the notification area. The initial sync begins automatically.
+
+## Where files are stored
+
+| What | Location |
+|------|----------|
+| Auth token | Windows Credential Manager (`PasswordVault`, target `InterlinedSync`) |
+| Preferences (`appsettings.json`) | `%APPDATA%\interlinedlist-sync\appsettings.json` |
+| Sync state database | `%APPDATA%\interlinedlist-sync\state.db` (SQLite) |
+| Application logs | `%LOCALAPPDATA%\interlinedlist-sync\logs\` (rolling Serilog files) |
+
+## Running tests
+
+```bash
+cd windows
+dotnet test InterlinedSync.sln
+```
+
+Integration tests against the live API require a `.env` file at the repo root — see
+[CONTRIBUTING.md](../CONTRIBUTING.md) for setup. Run the integration project directly:
+
+```bash
+dotnet test windows/InterlinedSync.IntegrationTests
+```
+
+## Troubleshooting
+
+**The tray icon does not appear after launch.**
+Check `%LOCALAPPDATA%\interlinedlist-sync\logs\` for error entries. If the process started but the
+icon is hidden, click the **Show hidden icons** chevron in the notification area.
+
+**"Sign In" fails with an authentication error.**
+Verify your email and password work at [interlinedlist.com](https://interlinedlist.com).
+The app uses `POST /api/auth/sync-token` — not your browser session.
+
+**MSIX will not install — "The app you're trying to install isn't a Microsoft-verified app."**
+The package is unsigned. Enable Developer Mode (see "SmartScreen warning" above) or wait for
+a signed release.
+
+**Documents are not syncing.**
+Right-click the tray icon and check the status tooltip. If it shows an error, open **Settings**
+for detail. Review the log files in `%LOCALAPPDATA%\interlinedlist-sync\logs\`.
+
+**Conflict copies accumulate in the sync folder.**
+Files named `<name>.conflict-<timestamp>.md` were created because both your local copy and the
+server copy changed before the next sync cycle. Review them and delete the copies you do not need.
+
+**Auto-start does not work after an xcopy (ZIP) install.**
+The MSIX `startupTask` extension (which registers auto-start via Task Scheduler) is only available
+in the packaged MSIX build. The ZIP build falls back to writing a `HKCU\Software\Microsoft\Windows\
+CurrentVersion\Run` registry value. If that toggle is not available in the ZIP build's Settings
+window, auto-start is not supported in your current install format — use the MSIX.

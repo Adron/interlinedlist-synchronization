@@ -1,19 +1,129 @@
-# InterlinedList Synchronization — macOS (`macos/`)
+# InterlinedList Sync — macOS
 
-The idea behind the application being developed for Mac OS is a synchronization tool for the Documents Feature of the web app at https://interlinedlist.com. The documentation is available at https://interlinedlist.com/help/documents and the API that can be used for synchronization is https://interlinedlist.com/help/api. The application will allow users to synchronize their documents between their local machine and the web app, ensuring that they have access to their documents from anywhere and that any changes made locally are reflected in the web app. The synchronization process will be designed to be efficient and user-friendly, providing a seamless experience for users of the Documents Feature.
+A native macOS menu bar application that bidirectionally syncs your
+[InterlinedList](https://interlinedlist.com) documents to a local folder.
+It runs silently in the background with no Dock icon, surfacing controls through a menu bar extra.
 
-The synchronization tool needs to sit with the system tray of the operating system, allowing users to easily access it and manage their document synchronization. The tool will run in the background, continuously monitoring for changes in the local documents and syncing them with the web app as needed. Users will be able to configure the synchronization settings, such as which folders to sync and how often to check for changes. The tool will also provide notifications to inform users of successful synchronizations or any issues that may arise during the process. Overall, this application aims to enhance the user experience by providing a convenient and efficient way to keep their documents up-to-date across all platforms.
+**Minimum requirement:** macOS 13 (Ventura)
 
-The synchronization tool should be a native application built with the specific operating system in mind. The stack for each respective operating system should be able to be used to build out the following features:
+**Stack:** Swift 5.9, AppKit (`NSStatusItem`), SwiftUI (preferences window),
+FSEvents (file watching), `URLSession` (API), Keychain (token storage),
+Swift Package Manager (build)
 
-- System tray integration: The application should be able to sit in the system tray, allowing users to easily access it and manage their document synchronization.
-- Background synchronization: The application should continuously monitor for changes in the local documents and sync them with the web app as needed.
-- Configuration options: Users should be able to configure the synchronization settings, such as which folders to sync and how often to check for changes.
-- Notifications: The application should provide notifications to inform users of successful synchronizations or any issues that may arise during the process.
-- Error handling: The application should be able to handle any errors that may occur during the synchronization process and provide appropriate feedback to the user.
-- Security: The application should ensure that the synchronization process is secure, protecting user data and preventing unauthorized access.
-- User-friendly interface: The application should have a user-friendly interface that allows users to easily manage their document synchronization and access their documents from the web app.
-- Performance: The application should be optimized for performance, ensuring that the synchronization process is efficient and does not consume excessive system resources.
-- Scalability: The application should be designed to handle a large number of documents and users, ensuring that it can scale as the user base grows.
-- Regular updates: The application should be regularly updated to fix any bugs, improve performance, and add new features based on user feedback and evolving needs.
-- Documentation: The application should have comprehensive documentation that provides users with clear instructions on how to use the synchronization tool, troubleshoot common issues, and understand the features and capabilities of the application. This documentation should be easily accessible within the application and online for reference.
+## Install
+
+> **Note:** Signed, distributable installers are not yet available. The GitHub Releases page will
+> list a DMG and PKG when v1.0 ships. Until then, build from source (see below).
+
+When releases are available, download `InterlinedSync.dmg` or `InterlinedSync.pkg` from the
+[Releases](https://github.com/Adron/interlinedlist-synchronization/releases) page.
+
+<details>
+<summary>Gatekeeper warning for unsigned builds</summary>
+
+If you install an unsigned build (built locally without a Developer ID certificate), macOS will
+show "InterlinedSync.app cannot be opened because it is from an unidentified developer."
+
+To open it:
+
+1. In Finder, right-click **InterlinedSync.app** and choose **Open**.
+2. Click **Open** in the dialog that appears.
+
+You only need to do this once per install. Subsequent launches proceed without the dialog.
+
+</details>
+
+## Build from source
+
+**Prerequisites:** Xcode 16 (installs Swift and SPM automatically).
+
+```bash
+# Clone the repo
+git clone https://github.com/Adron/interlinedlist-synchronization.git
+cd interlinedlist-synchronization
+
+# Build a release .app bundle
+bash macos/scripts/build-app.sh
+
+# Output: macos/build/InterlinedSync.app
+```
+
+To also build a `.pkg` installer:
+
+```bash
+bash macos/scripts/build-pkg.sh
+# Output: macos/build/InterlinedSync-<version>.pkg
+```
+
+For details on signed and notarized builds (Developer ID, notarization secrets), see
+[PACKAGING.md](PACKAGING.md).
+
+## First run
+
+1. Double-click **InterlinedSync.app** (or the PKG installer will handle this).
+2. An onboarding window opens. Enter your InterlinedList email and password and click **Sign In**.
+3. Choose a local folder to sync into (default: `~/InterlinedList Sync`).
+4. The menu bar icon appears. The initial sync begins automatically.
+
+<details>
+<summary>Keychain prompt on first sign-in</summary>
+
+macOS will ask: "InterlinedList Sync wants to use the login keychain." Click **Always Allow**
+so the app can retrieve your token on subsequent launches without prompting again.
+
+</details>
+
+<details>
+<summary>Login item approval (macOS 13+)</summary>
+
+When you enable **Launch at Login** in Preferences, macOS may show a notification:
+"InterlinedList Sync added to Login Items." You can manage this in
+**System Settings → General → Login Items & Extensions**.
+
+</details>
+
+## Where files are stored
+
+| What | Location |
+|------|----------|
+| Auth token | macOS Keychain (login keychain, service `interlinedsync`) |
+| Preferences (`UserDefaults`) | `~/Library/Preferences/com.interlinedlist.sync.plist` |
+| Security-scoped bookmark for sync folder | Stored in `UserDefaults` under `syncFolderBookmark` |
+| Log output | Console.app — filter by subsystem `com.interlinedlist.sync` |
+
+The application does not write config files to `~/Library/Application Support`. Settings are
+stored entirely in `UserDefaults` and the Keychain.
+
+## Running tests
+
+```bash
+cd macos
+swift test
+```
+
+Integration tests against the live API require a `.env` file at the repo root — see
+[CONTRIBUTING.md](../CONTRIBUTING.md) for setup.
+
+## Troubleshooting
+
+**The menu bar icon does not appear after launch.**
+Check Console.app for crash logs from `InterlinedSync`. If you built without signing, check that
+Gatekeeper has allowed the app (see "Gatekeeper warning" above).
+
+**"Sign In" fails with an authentication error.**
+Verify your email and password work at [interlinedlist.com](https://interlinedlist.com).
+The app uses `POST /api/auth/sync-token` — not your web session cookie.
+
+**Documents are not syncing.**
+Open the menu bar menu and check the status line. If it shows "Offline", your machine has no
+network access. If it shows an error, click **Preferences** to see more detail.
+Check Console.app for log messages from the `SyncEngine` subsystem.
+
+**Sync folder path shows as blank in Preferences after a restart.**
+The security-scoped bookmark may have become stale. Re-select the folder in Preferences →
+**Choose Folder** to re-create the bookmark.
+
+**Conflict copies accumulate in the sync folder.**
+Files named `<name>.conflict-<timestamp>.md` were created because both your local copy and the
+server copy changed before the next sync cycle. Review them and delete the copies you do not
+need.
