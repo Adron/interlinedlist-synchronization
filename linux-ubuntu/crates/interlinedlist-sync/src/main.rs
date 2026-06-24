@@ -102,8 +102,11 @@ async fn main() -> Result<()> {
     // On Linux, prefer GNOME Keyring; fall back to file store if keyring init
     // fails (e.g., headless SSH sessions without a keyring daemon running).
     // On non-Linux hosts, always use the file store.
+    // `_secret_backend` is unused in the daemon flow (the --status command
+    // re-probes the backend independently); bind it with a leading underscore
+    // to match the non-Linux branch below and satisfy clippy.
     #[cfg(target_os = "linux")]
-    let (secret_store, secret_backend): (Arc<dyn SecretStore>, SecretBackend) = {
+    let (secret_store, _secret_backend): (Arc<dyn SecretStore>, SecretBackend) = {
         match KeyringSecretStore::new_checked().await {
             Ok(ks) => {
                 info!("using GNOME Keyring for credential storage");
@@ -667,7 +670,7 @@ mod tests {
             *self.token.lock().unwrap() = Some(t.into());
         }
 
-        fn as_arc_dyn(self) -> Arc<dyn SecretStore> {
+        fn into_arc_dyn(self) -> Arc<dyn SecretStore> {
             Arc::new(self)
         }
     }
@@ -701,7 +704,7 @@ mod tests {
     async fn no_token_then_signal_transitions_to_idle() {
         let mock = MockSecretStore::empty();
         let mock_clone = mock.clone();
-        let store: Arc<dyn SecretStore> = mock.as_arc_dyn();
+        let store: Arc<dyn SecretStore> = mock.into_arc_dyn();
 
         let (status_tx, status_rx) = tokio::sync::watch::channel(SyncStatus::Idle);
         let (creds_tx, creds_rx) = tokio::sync::oneshot::channel::<()>();
@@ -728,7 +731,7 @@ mod tests {
 
     #[tokio::test]
     async fn token_already_present_exits_immediately() {
-        let store = MockSecretStore::with_token("existing_tok").as_arc_dyn();
+        let store = MockSecretStore::with_token("existing_tok").into_arc_dyn();
         let (status_tx, status_rx) = tokio::sync::watch::channel(SyncStatus::WaitingForCredentials);
         // Drop the tx side so the receiver sees an immediate error, ensuring
         // we don't rely on the signal path.
@@ -752,7 +755,7 @@ mod tests {
     async fn poll_fallback_detects_token_without_signal() {
         let mock = MockSecretStore::empty();
         let mock_clone = mock.clone();
-        let store = mock.as_arc_dyn();
+        let store = mock.into_arc_dyn();
 
         let (status_tx, status_rx) = tokio::sync::watch::channel(SyncStatus::Idle);
 
@@ -784,7 +787,7 @@ mod tests {
     async fn oneshot_signal_wakes_wait_loop() {
         let mock = MockSecretStore::empty();
         let mock_clone = mock.clone();
-        let store = mock.as_arc_dyn();
+        let store = mock.into_arc_dyn();
 
         let (status_tx, status_rx) = tokio::sync::watch::channel(SyncStatus::Idle);
         let (creds_tx, creds_rx) = tokio::sync::oneshot::channel::<()>();
@@ -821,7 +824,7 @@ mod tests {
 
     #[tokio::test]
     async fn initial_status_is_waiting_when_no_token() {
-        let store = MockSecretStore::empty().as_arc_dyn();
+        let store = MockSecretStore::empty().into_arc_dyn();
         // Simulate the check done in run_daemon before the watch channel is built.
         let has_token = store.load_token("default").await.is_ok();
         let initial = if has_token {
@@ -836,7 +839,7 @@ mod tests {
 
     #[tokio::test]
     async fn initial_status_is_idle_when_token_present() {
-        let store = MockSecretStore::with_token("tok").as_arc_dyn();
+        let store = MockSecretStore::with_token("tok").into_arc_dyn();
         let has_token = store.load_token("default").await.is_ok();
         let initial = if has_token {
             SyncStatus::Idle
