@@ -10,6 +10,8 @@ pub async fn run_tray_app(
     _status_rx: watch::Receiver<SyncStatus>,
     _sync_now_tx: mpsc::Sender<()>,
     _config_path: PathBuf,
+    _credentials_ready: tokio::sync::oneshot::Sender<()>,
+    _sign_out_rx: mpsc::Receiver<()>,
 ) -> Result<()> {
     anyhow::bail!("tray-app requires Linux (GTK4 / ksni)")
 }

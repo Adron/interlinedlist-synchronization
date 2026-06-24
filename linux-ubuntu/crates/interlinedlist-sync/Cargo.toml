@@ -3,6 +3,12 @@ name = "interlinedlist-sync"
 version = "0.1.0"
 edition = "2021"
 
+# Forward the `gtk` feature to tray-app so the sign-in dialog is compiled in
+# when GTK dev headers are present.  Build with `cargo build --features gtk` on
+# a Linux host with libgtk-4-dev and libadwaita-1-dev installed.
+[features]
+gtk = ["tray-app/gtk"]
+
 [[bin]]
 name = "interlinedlist-sync"
 path = "src/main.rs"
@@ -18,8 +24,14 @@ tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+tracing-appender = { workspace = true }
 clap = { workspace = true }
 dirs = { workspace = true }
+rusqlite = { workspace = true }
+async-trait = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
 
 # Enable GNOME Keyring and libnotify on Linux; fall back to file store + stub on other hosts.
 [target.'cfg(target_os = "linux")'.dependencies]

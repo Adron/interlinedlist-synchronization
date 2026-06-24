@@ -16,10 +16,15 @@ gtk = ["dep:gtk4", "dep:libadwaita"]
 [target.'cfg(target_os = "linux")'.dependencies]
 ksni = "0.2"
 image = { version = "0.25", default-features = false, features = ["png"] }
-# GTK4 + libadwaita for the Settings dialog. Optional so the workspace still
-# compiles without GTK dev headers (CI, macOS dev machines).
+# GTK4 + libadwaita for the Settings and Sign-in dialogs. Optional so the
+# workspace still compiles without GTK dev headers (CI, macOS dev machines).
 gtk4 = { version = "0.9", optional = true }
 libadwaita = { version = "0.7", optional = true }
+# api-client and secret-store are needed for the sign-in dialog (used in
+# linux.rs behind #[cfg(feature = "gtk")]). Listed under the Linux target so
+# they don't pull extra deps on macOS stub builds.
+api-client = { path = "../api-client" }
+secret-store = { path = "../secret-store" }
 
 [dependencies]
 sync-engine = { path = "../sync-engine" }

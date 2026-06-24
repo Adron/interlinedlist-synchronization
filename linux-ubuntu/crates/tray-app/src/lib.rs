@@ -3,6 +3,9 @@ use std::path::PathBuf;
 use anyhow::Result;
 use tokio::sync::{mpsc, watch};
 
+#[cfg(all(target_os = "linux", feature = "gtk"))]
+use std::sync::Arc;
+
 use sync_engine::SyncStatus;
 
 #[cfg(target_os = "linux")]
@@ -11,19 +14,74 @@ mod linux;
 #[cfg(all(target_os = "linux", feature = "gtk"))]
 pub(crate) mod settings;
 
+#[cfg(all(target_os = "linux", feature = "gtk"))]
+pub(crate) mod signin;
+
 #[cfg(not(target_os = "linux"))]
 mod stub;
 
+/// Run the tray application.
+///
+/// Parameters:
+/// - `status_rx`: watch channel carrying the current `SyncStatus`.
+///   The tray reads this to update its icon and label.
+/// - `sync_now_tx`: send a `()` to trigger an immediate sync cycle.
+/// - `config_path`: path to the user's `config.toml`; forwarded to the settings dialog.
+/// - `credentials_ready`: oneshot sender the tray fires when the sign-in
+///   dialog stores a token so the daemon can hot-start the sync engine.
+/// - `sign_out_rx`: receives a `()` from the daemon when a sign-out
+///   operation completes so the tray can flip back to the signed-out state.
 pub async fn run_tray_app(
     status_rx: watch::Receiver<SyncStatus>,
     sync_now_tx: mpsc::Sender<()>,
     config_path: PathBuf,
+    credentials_ready: tokio::sync::oneshot::Sender<()>,
+    sign_out_rx: mpsc::Receiver<()>,
 ) -> Result<()> {
     #[cfg(target_os = "linux")]
-    return linux::run_tray_app(status_rx, sync_now_tx, config_path).await;
+    return linux::run_tray_app(
+        status_rx,
+        sync_now_tx,
+        config_path,
+        credentials_ready,
+        sign_out_rx,
+    )
+    .await;
 
     #[cfg(not(target_os = "linux"))]
-    return stub::run_tray_app(status_rx, sync_now_tx, config_path).await;
+    return stub::run_tray_app(
+        status_rx,
+        sync_now_tx,
+        config_path,
+        credentials_ready,
+        sign_out_rx,
+    )
+    .await;
+}
+
+/// Extended entry point that wires in the API client and secret store for the
+/// GTK sign-in dialog.  Only available on Linux with the `gtk` feature; on
+/// other targets (and when GTK is not compiled in) falls back to `run_tray_app`.
+#[cfg(all(target_os = "linux", feature = "gtk"))]
+pub async fn run_tray_app_with_signin_deps(
+    status_rx: watch::Receiver<SyncStatus>,
+    sync_now_tx: mpsc::Sender<()>,
+    config_path: PathBuf,
+    credentials_ready: tokio::sync::oneshot::Sender<()>,
+    sign_out_rx: mpsc::Receiver<()>,
+    api: Arc<dyn api_client::ApiClientTrait>,
+    store: Arc<dyn secret_store::SecretStore>,
+) -> Result<()> {
+    linux::run_tray_app_with_signin_deps(
+        status_rx,
+        sync_now_tx,
+        config_path,
+        credentials_ready,
+        sign_out_rx,
+        api,
+        store,
+    )
+    .await
 }
 
 #[cfg(test)]

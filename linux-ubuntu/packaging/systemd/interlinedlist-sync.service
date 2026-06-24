@@ -1,16 +1,35 @@
 [Unit]
 Description=InterlinedList Document Synchronization
-Documentation=https://interlinedlist.com/help/documents
+Documentation=https://interlinedlist.com/help/documents https://github.com/interlinedlist/sync
 After=graphical-session.target network-online.target
 Wants=network-online.target
+# Limit restarts to 3 within 60 seconds so a permanent failure (e.g., missing
+# credentials) does not loop indefinitely. After the burst limit is hit,
+# systemd marks the unit as failed and stops retrying until the user intervenes.
+StartLimitIntervalSec=60s
+StartLimitBurst=3
 
 [Service]
-Type=notify
+# Type=exec: systemd marks the service active as soon as ExecStart exec()s
+# successfully. The daemon runs in the foreground (--daemon flag keeps the
+# process alive via the GTK/tray main loop). We intentionally do NOT use
+# Type=notify because the daemon currently has no sd_notify(READY=1) call;
+# using Type=notify without a readiness signal would cause systemd to wait
+# until TimeoutStartSec (default 90 s) and then kill the daemon — a prime
+# "silent failure" cause diagnosed in Workstream A. Type=exec is the correct
+# and lower-risk choice for a foreground daemon.
+Type=exec
 ExecStart=/usr/bin/interlinedlist-sync --daemon
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=10s
 TimeoutStopSec=30s
+
+# Journal capture — makes `journalctl --user -u interlinedlist-sync` work.
+# The daemon also writes to its own rolling log file for persistence beyond
+# journald's retention window.
+StandardOutput=journal
+StandardError=journal
 
 # Hardening
 NoNewPrivileges=yes

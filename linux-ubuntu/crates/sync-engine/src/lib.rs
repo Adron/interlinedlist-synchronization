@@ -61,6 +61,8 @@ pub enum SyncError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SyncStatus {
+    /// No credentials are present; the daemon is waiting for the user to sign in.
+    WaitingForCredentials,
     Idle,
     Syncing,
     Paused,
