@@ -22,7 +22,7 @@ impl MockApiClient {
     pub fn new() -> Self {
         Self {
             documents: Mutex::new(HashMap::new()),
-            login_token: "mock-token".to_string(),
+            login_token: "session=mock-session-token".to_string(),
             fail_next: Mutex::new(None),
             delta_response: Mutex::new(None),
         }
@@ -167,7 +167,7 @@ impl ApiClientTrait for MockApiClient {
                         content: Some(d.content.clone()),
                         folder_id: d.folder_id.clone(),
                         updated_at: d.updated_at,
-                        deleted: false,
+                        deleted_at: None,
                     })
                     .collect(),
             });

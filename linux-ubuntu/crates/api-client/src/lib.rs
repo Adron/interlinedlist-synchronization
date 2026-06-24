@@ -40,30 +40,39 @@ pub enum ApiError {
     NoToken { account: String },
 }
 
+/// Document as returned in list and get responses.
+/// Field names match the wire format: camelCase JSON fields mapped via serde rename.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentSummary {
     pub id: String,
     pub title: String,
+    #[serde(rename = "updatedAt")]
     pub updated_at: DateTime<Utc>,
+    #[serde(rename = "contentHash")]
     pub sha256: Option<String>,
     #[serde(rename = "folderId")]
     pub folder_id: Option<String>,
 }
 
+/// Full document with content.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Document {
     pub id: String,
     pub title: String,
     pub content: String,
+    #[serde(rename = "updatedAt")]
     pub updated_at: DateTime<Utc>,
+    #[serde(rename = "contentHash")]
     pub sha256: Option<String>,
     #[serde(rename = "folderId")]
     pub folder_id: Option<String>,
 }
 
+/// Response from GET /documents/sync.
+/// The server field is `lastSyncAt`; `deleted` is derived from `deletedAt` being non-null.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeltaResponse {
-    #[serde(rename = "syncedAt")]
+    #[serde(rename = "lastSyncAt")]
     pub synced_at: DateTime<Utc>,
     pub documents: Vec<DocumentDelta>,
 }
@@ -77,8 +86,15 @@ pub struct DocumentDelta {
     pub folder_id: Option<String>,
     #[serde(rename = "updatedAt")]
     pub updated_at: DateTime<Utc>,
-    #[serde(default)]
-    pub deleted: bool,
+    /// True when `deletedAt` is non-null in the server response.
+    #[serde(rename = "deletedAt")]
+    pub deleted_at: Option<DateTime<Utc>>,
+}
+
+impl DocumentDelta {
+    pub fn deleted(&self) -> bool {
+        self.deleted_at.is_some()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -93,14 +109,22 @@ pub struct UpdateDocumentRequest {
     pub content: String,
 }
 
+// Wire-format wrappers for POST and PATCH /documents responses.
 #[derive(Debug, Deserialize)]
-struct LoginResponse {
-    token: String,
+struct DocumentEnvelope {
+    document: Document,
+}
+
+// Wire-format wrapper for GET /documents response.
+#[derive(Debug, Deserialize)]
+struct DocumentListEnvelope {
+    documents: Vec<DocumentSummary>,
 }
 
 #[async_trait]
 pub trait ApiClientTrait: Send + Sync {
-    async fn login(&self, username: &str, password: &str) -> Result<String, ApiError>;
+    /// POST /auth/login — returns the raw `session=<value>` cookie string to store.
+    async fn login(&self, email: &str, password: &str) -> Result<String, ApiError>;
     async fn list_documents(&self, account: &str) -> Result<Vec<DocumentSummary>, ApiError>;
     async fn get_document(&self, account: &str, id: &str) -> Result<Document, ApiError>;
     async fn create_document(
@@ -149,7 +173,8 @@ impl ApiClient {
         })
     }
 
-    async fn token_for(&self, account: &str) -> Result<String, ApiError> {
+    /// Load the session cookie string (e.g. `session=abc123`) for the given account.
+    async fn session_cookie_for(&self, account: &str) -> Result<String, ApiError> {
         self.secrets
             .load_token(account)
             .await
@@ -212,22 +237,38 @@ impl ApiClient {
 
 #[async_trait]
 impl ApiClientTrait for ApiClient {
-    async fn login(&self, username: &str, password: &str) -> Result<String, ApiError> {
-        debug!("logging in as {username}");
+    async fn login(&self, email: &str, password: &str) -> Result<String, ApiError> {
+        debug!("logging in as {email}");
         let resp = self
             .http
             .post(self.url("/auth/login"))
-            .json(&serde_json::json!({ "username": username, "password": password }))
+            .json(&serde_json::json!({ "email": email, "password": password }))
             .send()
             .await?;
 
         match resp.status() {
             StatusCode::OK => {
-                let body: LoginResponse = resp.json().await?;
-                info!("login successful for {username}");
-                Ok(body.token)
+                // The API authenticates via a session cookie; extract the raw `session=<value>`
+                // cookie from Set-Cookie and store it as the account token.
+                let cookie = resp
+                    .headers()
+                    .get_all("set-cookie")
+                    .iter()
+                    .filter_map(|v| v.to_str().ok())
+                    .find(|s| s.starts_with("session="))
+                    .and_then(|s| s.split(';').next())
+                    .map(|s| s.to_string())
+                    .ok_or_else(|| {
+                        ApiError::Auth("login succeeded but no session cookie returned".to_string())
+                    })?;
+                info!("login successful for {email}");
+                Ok(cookie)
             }
             StatusCode::UNAUTHORIZED => Err(ApiError::Auth("invalid credentials".to_string())),
+            StatusCode::BAD_REQUEST => {
+                let body = resp.text().await.unwrap_or_default();
+                Err(ApiError::Auth(format!("bad request: {body}")))
+            }
             s => {
                 let status = s.as_u16();
                 let body = resp.text().await.unwrap_or_default();
@@ -237,24 +278,25 @@ impl ApiClientTrait for ApiClient {
     }
 
     async fn list_documents(&self, account: &str) -> Result<Vec<DocumentSummary>, ApiError> {
-        let token = self.token_for(account).await?;
+        let cookie = self.session_cookie_for(account).await?;
         self.execute_with_retry(|| async {
             let resp = self
                 .http
                 .get(self.url("/documents"))
-                .bearer_auth(&token)
+                .header("Cookie", &cookie)
                 .send()
                 .await?;
-            parse_response(resp).await
+            let envelope: DocumentListEnvelope = parse_response(resp).await?;
+            Ok(envelope.documents)
         })
         .await
     }
 
     async fn get_document(&self, account: &str, id: &str) -> Result<Document, ApiError> {
-        let token = self.token_for(account).await?;
+        let cookie = self.session_cookie_for(account).await?;
         let url = self.url(&format!("/documents/{id}"));
         self.execute_with_retry(|| async {
-            let resp = self.http.get(&url).bearer_auth(&token).send().await?;
+            let resp = self.http.get(&url).header("Cookie", &cookie).send().await?;
             parse_response(resp).await
         })
         .await
@@ -265,16 +307,17 @@ impl ApiClientTrait for ApiClient {
         account: &str,
         req: CreateDocumentRequest,
     ) -> Result<Document, ApiError> {
-        let token = self.token_for(account).await?;
+        let cookie = self.session_cookie_for(account).await?;
         self.execute_with_retry(|| async {
             let resp = self
                 .http
                 .post(self.url("/documents"))
-                .bearer_auth(&token)
+                .header("Cookie", &cookie)
                 .json(&req)
                 .send()
                 .await?;
-            parse_response(resp).await
+            let envelope: DocumentEnvelope = parse_response(resp).await?;
+            Ok(envelope.document)
         })
         .await
     }
@@ -285,32 +328,38 @@ impl ApiClientTrait for ApiClient {
         id: &str,
         req: UpdateDocumentRequest,
     ) -> Result<Document, ApiError> {
-        let token = self.token_for(account).await?;
+        let cookie = self.session_cookie_for(account).await?;
         let url = self.url(&format!("/documents/{id}"));
         self.execute_with_retry(|| async {
             let resp = self
                 .http
                 .patch(&url)
-                .bearer_auth(&token)
+                .header("Cookie", &cookie)
                 .json(&req)
                 .send()
                 .await?;
-            parse_response(resp).await
+            let envelope: DocumentEnvelope = parse_response(resp).await?;
+            Ok(envelope.document)
         })
         .await
     }
 
     async fn delete_document(&self, account: &str, id: &str) -> Result<(), ApiError> {
-        let token = self.token_for(account).await?;
+        let cookie = self.session_cookie_for(account).await?;
         let url = self.url(&format!("/documents/{id}"));
         self.execute_with_retry(|| async {
-            let resp = self.http.delete(&url).bearer_auth(&token).send().await?;
+            let resp = self
+                .http
+                .delete(&url)
+                .header("Cookie", &cookie)
+                .send()
+                .await?;
             match resp.status() {
                 StatusCode::OK | StatusCode::NO_CONTENT | StatusCode::ACCEPTED => Ok(()),
                 StatusCode::NOT_FOUND => Err(ApiError::NotFound {
                     resource: url.clone(),
                 }),
-                StatusCode::UNAUTHORIZED => Err(ApiError::Auth("token rejected".to_string())),
+                StatusCode::UNAUTHORIZED => Err(ApiError::Auth("session rejected".to_string())),
                 StatusCode::TOO_MANY_REQUESTS => {
                     let retry = retry_after(&resp);
                     Err(ApiError::RateLimited {
@@ -332,14 +381,14 @@ impl ApiClientTrait for ApiClient {
         account: &str,
         since: Option<DateTime<Utc>>,
     ) -> Result<DeltaResponse, ApiError> {
-        let token = self.token_for(account).await?;
+        let cookie = self.session_cookie_for(account).await?;
         let base_url = self.url("/documents/sync");
-        let url = match since {
-            Some(ts) => format!("{}?lastSyncAt={}", base_url, ts.to_rfc3339()),
-            None => base_url,
-        };
         self.execute_with_retry(|| async {
-            let resp = self.http.get(&url).bearer_auth(&token).send().await?;
+            let mut req = self.http.get(&base_url).header("Cookie", &cookie);
+            if let Some(ts) = since {
+                req = req.query(&[("lastSyncAt", ts.to_rfc3339())]);
+            }
+            let resp = req.send().await?;
             parse_response(resp).await
         })
         .await
@@ -354,7 +403,7 @@ async fn parse_response<T: serde::de::DeserializeOwned>(
         StatusCode::NOT_FOUND => Err(ApiError::NotFound {
             resource: resp.url().to_string(),
         }),
-        StatusCode::UNAUTHORIZED => Err(ApiError::Auth("token rejected".to_string())),
+        StatusCode::UNAUTHORIZED => Err(ApiError::Auth("session rejected".to_string())),
         StatusCode::CONFLICT => {
             let body = resp.text().await.unwrap_or_default();
             Err(ApiError::Conflict(body))
@@ -393,7 +442,7 @@ mod tests {
     struct TestContext {
         server: ServerGuard,
         client: ApiClient,
-        #[allow(dead_code)] // kept alive so the temp dir isn't cleaned up during the test
+        #[allow(dead_code)]
         dir: TempDir,
         account: String,
     }
@@ -403,7 +452,11 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let secrets = Arc::new(FileSecretStore::new(dir.path().to_path_buf()));
         let account = "test@example.com".to_string();
-        secrets.store_token(&account, "test-token").await.unwrap();
+        // Store the cookie as it would be stored after login.
+        secrets
+            .store_token(&account, "session=test-session-token")
+            .await
+            .unwrap();
 
         let config = ApiClientConfig {
             base_url: server.url(),
@@ -421,19 +474,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn login_returns_token_on_200() {
+    async fn login_returns_session_cookie_on_200() {
         let mut ctx = make_context().await;
         let _m = ctx
             .server
             .mock("POST", "/auth/login")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"token":"tok-abc"}"#)
+            .with_header("set-cookie", "session=tok-abc; Path=/; HttpOnly")
+            .with_body(r#"{"message":"ok","user":{"id":"u1","email":"test@example.com"}}"#)
             .create_async()
             .await;
 
-        let token = ctx.client.login("user", "pass").await.unwrap();
-        assert_eq!(token, "tok-abc");
+        let token = ctx.client.login("test@example.com", "pass").await.unwrap();
+        assert_eq!(token, "session=tok-abc");
     }
 
     #[tokio::test]
@@ -451,14 +505,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn login_returns_auth_error_on_400() {
+        let mut ctx = make_context().await;
+        let _m = ctx
+            .server
+            .mock("POST", "/auth/login")
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"error":"Email and password are required"}"#)
+            .create_async()
+            .await;
+
+        let err = ctx.client.login("", "").await.unwrap_err();
+        assert!(matches!(err, ApiError::Auth(_)));
+    }
+
+    #[tokio::test]
     async fn list_documents_deserializes_correctly() {
         let mut ctx = make_context().await;
-        let body =
-            r#"[{"id":"doc-1","title":"Note","updated_at":"2026-01-01T00:00:00Z","sha256":null}]"#;
+        let body = r#"{"documents":[{"id":"doc-1","title":"Note","updatedAt":"2026-01-01T00:00:00Z","contentHash":null,"folderId":null}]}"#;
         let _m = ctx
             .server
             .mock("GET", "/documents")
-            .match_header("authorization", "Bearer test-token")
+            .match_header("cookie", "session=test-session-token")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(body)
@@ -491,7 +560,7 @@ mod tests {
     #[tokio::test]
     async fn create_document_sends_json_body() {
         let mut ctx = make_context().await;
-        let resp_body = r##"{"id":"new-1","title":"Test","content":"# Hello","updated_at":"2026-01-01T00:00:00Z","sha256":null}"##;
+        let resp_body = r##"{"document":{"id":"new-1","title":"Test","content":"# Hello","updatedAt":"2026-01-01T00:00:00Z","contentHash":null,"folderId":null},"message":"created"}"##;
         let _m = ctx
             .server
             .mock("POST", "/documents")
@@ -518,7 +587,7 @@ mod tests {
     #[tokio::test]
     async fn update_document_sends_patch() {
         let mut ctx = make_context().await;
-        let resp_body = r##"{"id":"doc-1","title":"Test","content":"# Updated","updated_at":"2026-01-01T00:00:00Z","sha256":null,"folderId":null}"##;
+        let resp_body = r##"{"document":{"id":"doc-1","title":"Test","content":"# Updated","updatedAt":"2026-01-01T00:00:00Z","contentHash":null,"folderId":null},"message":"updated"}"##;
         let _m = ctx
             .server
             .mock("PATCH", "/documents/doc-1")
@@ -544,6 +613,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delete_document_succeeds_on_200() {
+        let mut ctx = make_context().await;
+        let _m = ctx
+            .server
+            .mock("DELETE", "/documents/doc-1")
+            .with_status(200)
+            .create_async()
+            .await;
+
+        ctx.client
+            .delete_document(&ctx.account, "doc-1")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn delete_document_succeeds_on_204() {
         let mut ctx = make_context().await;
         let _m = ctx
@@ -560,14 +645,11 @@ mod tests {
     }
 
     /// Verify that a transient 503 is retried and the second 200 response succeeds.
-    /// The test client is configured with `max_retries = 2` and a 10ms backoff base
-    /// so the retry happens quickly without slowing the test suite.
     #[tokio::test]
     async fn retry_on_503_then_succeeds_on_200() {
         let mut ctx = make_context().await;
-        let doc_body = r##"{"id":"doc-r","title":"Retry","content":"# Retry","updated_at":"2026-01-01T00:00:00Z","sha256":null}"##;
+        let doc_body = r##"{"id":"doc-r","title":"Retry","content":"# Retry","updatedAt":"2026-01-01T00:00:00Z","contentHash":null,"folderId":null}"##;
 
-        // First request: 503 — should trigger retry.
         let _m503 = ctx
             .server
             .mock("GET", "/documents/doc-r")
@@ -575,7 +657,6 @@ mod tests {
             .create_async()
             .await;
 
-        // Second request: 200 with a valid body.
         let _m200 = ctx
             .server
             .mock("GET", "/documents/doc-r")
@@ -599,7 +680,6 @@ mod tests {
     async fn retries_exhausted_returns_error() {
         let mut ctx = make_context().await;
 
-        // Both mock requests return 503, exhausting the two allowed attempts.
         let _m1 = ctx
             .server
             .mock("GET", "/documents/doc-x")
@@ -628,7 +708,7 @@ mod tests {
     async fn fetch_delta_parses_response() {
         let mut ctx = make_context().await;
         let body = r##"{
-            "syncedAt": "2026-06-01T12:00:00Z",
+            "lastSyncAt": "2026-06-01T12:00:00Z",
             "documents": [
                 {
                     "id": "d1",
@@ -636,14 +716,15 @@ mod tests {
                     "content": "# Hello",
                     "folderId": "folder-a",
                     "updatedAt": "2026-06-01T11:00:00Z",
-                    "deleted": false
+                    "deletedAt": null
                 }
-            ]
+            ],
+            "folders": []
         }"##;
         let _m = ctx
             .server
             .mock("GET", "/documents/sync")
-            .match_header("authorization", "Bearer test-token")
+            .match_header("cookie", "session=test-session-token")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(body)
@@ -654,13 +735,13 @@ mod tests {
         assert_eq!(delta.documents.len(), 1);
         assert_eq!(delta.documents[0].id, "d1");
         assert_eq!(delta.documents[0].folder_id.as_deref(), Some("folder-a"));
-        assert!(!delta.documents[0].deleted);
+        assert!(!delta.documents[0].deleted());
     }
 
     #[tokio::test]
     async fn fetch_delta_no_since_omits_query() {
         let mut ctx = make_context().await;
-        let body = r#"{"syncedAt":"2026-06-01T12:00:00Z","documents":[]}"#;
+        let body = r#"{"lastSyncAt":"2026-06-01T12:00:00Z","documents":[],"folders":[]}"#;
         let _m = ctx
             .server
             .mock("GET", "/documents/sync")
@@ -672,17 +753,14 @@ mod tests {
 
         let delta = ctx.client.fetch_delta(&ctx.account, None).await.unwrap();
         assert!(delta.documents.is_empty());
-        assert_eq!(
-            delta.synced_at.to_rfc3339(),
-            "2026-06-01T12:00:00+00:00"
-        );
+        assert_eq!(delta.synced_at.to_rfc3339(), "2026-06-01T12:00:00+00:00");
     }
 
     #[tokio::test]
     async fn fetch_delta_with_tombstones() {
         let mut ctx = make_context().await;
         let body = r##"{
-            "syncedAt": "2026-06-02T00:00:00Z",
+            "lastSyncAt": "2026-06-02T00:00:00Z",
             "documents": [
                 {
                     "id": "gone-1",
@@ -690,9 +768,10 @@ mod tests {
                     "content": null,
                     "folderId": null,
                     "updatedAt": "2026-06-01T23:59:00Z",
-                    "deleted": true
+                    "deletedAt": "2026-06-01T23:59:30Z"
                 }
-            ]
+            ],
+            "folders": []
         }"##;
         let _m = ctx
             .server
@@ -705,7 +784,7 @@ mod tests {
 
         let delta = ctx.client.fetch_delta(&ctx.account, None).await.unwrap();
         assert_eq!(delta.documents.len(), 1);
-        assert!(delta.documents[0].deleted);
+        assert!(delta.documents[0].deleted());
         assert!(delta.documents[0].content.is_none());
     }
 }

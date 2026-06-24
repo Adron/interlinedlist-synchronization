@@ -245,7 +245,7 @@ impl SyncEngine {
             let delta = self.api.fetch_delta(&self.account, Some(since_ts)).await?;
             for entry in &delta.documents {
                 self.apply_delta_entry(entry).await?;
-                if !entry.deleted {
+                if !entry.deleted() {
                     downloaded += 1;
                 }
             }
@@ -295,7 +295,7 @@ impl SyncEngine {
     }
 
     async fn apply_delta_entry(&self, entry: &DocumentDelta) -> Result<(), SyncError> {
-        if entry.deleted {
+        if entry.deleted() {
             if let Ok(Some(record)) = self.state.lookup_by_server_id(&entry.id) {
                 if record.local_path.exists() {
                     std::fs::remove_file(&record.local_path).map_err(|e| SyncError::Io {
@@ -655,14 +655,11 @@ mod tests {
                 content: None,
                 folder_id: None,
                 updated_at: Utc::now(),
-                deleted: true,
+                deleted_at: Some(Utc::now()),
             }],
         };
 
-        engine
-            .apply_delta_entry(&delta.documents[0])
-            .await
-            .unwrap();
+        engine.apply_delta_entry(&delta.documents[0]).await.unwrap();
 
         assert!(!local_path.exists(), "tombstoned file should be removed");
         assert!(
@@ -699,7 +696,10 @@ mod tests {
         engine.poll_remote().await.unwrap();
 
         let expected = watch_dir.join("first-sync-doc.md");
-        assert!(expected.exists(), "document should be written on first sync");
+        assert!(
+            expected.exists(),
+            "document should be written on first sync"
+        );
         assert!(
             state.get_meta("last_delta_synced_at").unwrap().is_some(),
             "synced_at should be persisted after first sync"
@@ -714,14 +714,12 @@ mod tests {
         let api = Arc::new(MockApiClient::new());
         let state = make_state(&dir);
 
-        let fixed_time: chrono::DateTime<Utc> =
-            "2026-05-01T00:00:00Z".parse().unwrap();
+        let fixed_time: chrono::DateTime<Utc> = "2026-05-01T00:00:00Z".parse().unwrap();
         state
             .set_meta("last_delta_synced_at", &fixed_time.to_rfc3339())
             .unwrap();
 
-        let new_sync_time: chrono::DateTime<Utc> =
-            "2026-06-15T10:30:00Z".parse().unwrap();
+        let new_sync_time: chrono::DateTime<Utc> = "2026-06-15T10:30:00Z".parse().unwrap();
         api.set_delta_response(api_client::DeltaResponse {
             synced_at: new_sync_time,
             documents: vec![],
@@ -736,10 +734,9 @@ mod tests {
             .get_meta("last_delta_synced_at")
             .unwrap()
             .expect("synced_at must be stored");
-        let stored_dt: chrono::DateTime<Utc> =
-            chrono::DateTime::parse_from_rfc3339(&stored)
-                .unwrap()
-                .with_timezone(&Utc);
+        let stored_dt: chrono::DateTime<Utc> = chrono::DateTime::parse_from_rfc3339(&stored)
+            .unwrap()
+            .with_timezone(&Utc);
         assert_eq!(stored_dt, new_sync_time);
     }
 
