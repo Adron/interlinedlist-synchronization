@@ -258,22 +258,12 @@ jobs:
 
       # -------------------------------------------------------------------
       # Snap packaging — M7
-      # snapcraft --destructive-mode builds directly on the runner without
-      # spawning LXD or Multipass (both require nested virtualisation that
-      # GitHub-hosted runners do not provide).
-      # The resulting .snap is unsigned; the Store signs it on upload.
+      # Deferred from CI for now: snap-in-snap install of core22 fails
+      # inside GitHub-hosted runners (snapd restrictions in destructive
+      # mode). Reach parity by building the snap on a maintainer machine
+      # or via snapcraft remote-build, then uploading manually. See
+      # linux-ubuntu/PACKAGING.md and snap/snapcraft.yaml.
       # -------------------------------------------------------------------
-      - name: Install snapcraft
-        run: sudo snap install snapcraft --classic
-
-      - name: Build snap
-        working-directory: linux-ubuntu
-        run: snapcraft --destructive-mode
-        # Produces: linux-ubuntu/interlinedlist-sync_0.1.0_amd64.snap
-        # Note: to publish to the Snap Store after this job completes,
-        # run from a maintainer machine:
-        #   snapcraft upload --release=stable interlinedlist-sync_*.snap
-        # This requires SNAPCRAFT_STORE_CREDENTIALS — see PACKAGING.md.
 
       - name: Upload Linux artifacts
         uses: actions/upload-artifact@v4
