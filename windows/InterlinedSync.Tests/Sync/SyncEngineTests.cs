@@ -45,7 +45,7 @@ public sealed class SyncEngineTests : IAsyncLifetime
         var apiOptions = Options.Create(new ApiOptions
         {
             BaseUrl = "https://test.invalid",
-            LoginEndpoint = "/api/auth/login",
+            LoginEndpoint = "/api/auth/sync-token",
         });
         var httpClient = _http.ToHttpClient();
         _client = new InterlinedListClient(httpClient, apiOptions, NullLogger<InterlinedListClient>.Instance);
@@ -381,7 +381,7 @@ public sealed class SyncEngineTests : IAsyncLifetime
         var syncedAt = new DateTimeOffset(2026, 6, 22, 12, 0, 0, TimeSpan.Zero);
         StubDelta(syncedAt,
             new DocumentDelta("doc-1", "Fresh", "body", null,
-                new DateTimeOffset(2026, 6, 22, 11, 0, 0, TimeSpan.Zero), false));
+                new DateTimeOffset(2026, 6, 22, 11, 0, 0, TimeSpan.Zero), null));
 
         var result = await _engine.RunOnceAsync(default);
 
@@ -405,7 +405,8 @@ public sealed class SyncEngineTests : IAsyncLifetime
 
         StubDelta(new DateTimeOffset(2026, 6, 22, 12, 0, 0, TimeSpan.Zero),
             new DocumentDelta("doc-dead", "Doomed", null, null,
-                new DateTimeOffset(2026, 6, 22, 11, 0, 0, TimeSpan.Zero), true));
+                new DateTimeOffset(2026, 6, 22, 11, 0, 0, TimeSpan.Zero),
+                new DateTimeOffset(2026, 6, 22, 11, 45, 0, TimeSpan.Zero)));
 
         var result = await _engine.RunOnceAsync(default);
 
@@ -414,15 +415,16 @@ public sealed class SyncEngineTests : IAsyncLifetime
         (await _repository.GetByIdAsync("doc-dead")).Should().BeNull();
     }
 
+    private static readonly System.Text.Json.JsonSerializerOptions StubJson = new()
+    {
+        PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+    };
+
     private void StubDelta(DateTimeOffset syncedAt, params DocumentDelta[] documents)
     {
         var payload = new DeltaResponse(syncedAt, Array.Empty<Folder>(), documents);
-        var json = System.Text.Json.JsonSerializer.Serialize(
-            payload,
-            new System.Text.Json.JsonSerializerOptions
-            {
-                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
-            });
+        var json = System.Text.Json.JsonSerializer.Serialize(payload, StubJson);
         _http.When(HttpMethod.Get, "*/api/documents/sync*")
              .Respond("application/json", json);
     }
@@ -431,30 +433,22 @@ public sealed class SyncEngineTests : IAsyncLifetime
     {
         var matched = _http.When(HttpMethod.Get, "*/api/documents/sync*")
                            .Respond("application/json",
-                               "{\"syncedAt\":\"2026-06-22T12:00:00+00:00\",\"folders\":[],\"documents\":[]}");
+                               "{\"lastSyncAt\":\"2026-06-22T12:00:00+00:00\",\"folders\":[],\"documents\":[]}");
         return () => _http.GetMatchCount(matched);
     }
 
     private void StubCreate(Document doc)
     {
-        var json = System.Text.Json.JsonSerializer.Serialize(
-            doc,
-            new System.Text.Json.JsonSerializerOptions
-            {
-                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
-            });
+        var envelope = new { message = "Document created", document = doc };
+        var json = System.Text.Json.JsonSerializer.Serialize(envelope, StubJson);
         _http.When(HttpMethod.Post, "*/api/documents")
              .Respond("application/json", json);
     }
 
     private void StubUpdate(string id, Document doc)
     {
-        var json = System.Text.Json.JsonSerializer.Serialize(
-            doc,
-            new System.Text.Json.JsonSerializerOptions
-            {
-                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
-            });
+        var envelope = new { message = "Document updated", document = doc };
+        var json = System.Text.Json.JsonSerializer.Serialize(envelope, StubJson);
         _http.When(HttpMethod.Patch, $"*/api/documents/{id}")
              .Respond("application/json", json);
     }
@@ -467,12 +461,8 @@ public sealed class SyncEngineTests : IAsyncLifetime
 
     private void StubDocuments(params Document[] docs)
     {
-        var json = System.Text.Json.JsonSerializer.Serialize(
-            docs,
-            new System.Text.Json.JsonSerializerOptions
-            {
-                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
-            });
+        var envelope = new { documents = docs };
+        var json = System.Text.Json.JsonSerializer.Serialize(envelope, StubJson);
         _http.When(HttpMethod.Get, "*/api/documents")
              .Respond("application/json", json);
     }

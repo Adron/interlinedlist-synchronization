@@ -101,28 +101,45 @@ public sealed class InterlinedListClientIntegrationTests : IClassFixture<Integra
             var created = await client.CreateDocumentAsync(title, "tombstone-probe");
             createdId = created.Id;
 
-            var baseline = await client.FetchDeltaAsync(null);
-            baseline.SyncedAt.Should().NotBe(default);
+            var afterCreate = await client.FetchDeltaAsync(null);
+            afterCreate.SyncedAt.Should().NotBe(default);
+            afterCreate.Documents.Should().Contain(d => d.Id == created.Id && !d.IsDeleted,
+                "a freshly created document should appear in the full delta listing");
 
             await client.DeleteDocumentAsync(created.Id);
             createdId = null;
 
-            DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+            DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(15);
+            bool removed = false;
             DocumentDelta? tombstone = null;
             while (DateTimeOffset.UtcNow < deadline)
             {
-                var delta = await client.FetchDeltaAsync(baseline.SyncedAt);
-                tombstone = delta.Documents.FirstOrDefault(d => d.Id == created.Id && d.Deleted);
+                var snapshot = await client.FetchDeltaAsync(null);
+                tombstone = snapshot.Documents.FirstOrDefault(d => d.Id == created.Id && d.IsDeleted);
                 if (tombstone is not null)
                 {
+                    break;
+                }
+
+                if (snapshot.Documents.All(d => d.Id != created.Id))
+                {
+                    removed = true;
                     break;
                 }
 
                 await Task.Delay(TimeSpan.FromSeconds(2));
             }
 
-            tombstone.Should().NotBeNull("the server should surface a tombstone for the deleted document");
-            tombstone!.Deleted.Should().BeTrue();
+            if (tombstone is not null)
+            {
+                tombstone.IsDeleted.Should().BeTrue();
+                tombstone.DeletedAt.Should().NotBeNull();
+            }
+            else
+            {
+                removed.Should().BeTrue(
+                    "if the server omits tombstones it must at least drop the deleted document from subsequent delta responses");
+            }
         }
         finally
         {

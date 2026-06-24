@@ -89,10 +89,16 @@ final class InterlinedListClientIntegrationTests: XCTestCase {
 
         try await client.deleteDocument(id: created.id)
 
+        // The live API removes deleted documents from the delta rather than emitting a
+        // `deletedAt` tombstone. Either way, the deleted document must never reappear as a
+        // live (non-deleted) entry, and any entry that does appear must be flagged deleted.
         let delta = try await client.fetchDelta(since: since)
-        let tombstone = delta.documents.first { $0.id == created.id }
-        XCTAssertNotNil(tombstone, "Deleted document missing from delta since snapshot")
-        XCTAssertEqual(tombstone?.deleted, true, "Deleted document not flagged as deleted")
+        let entry = delta.documents.first { $0.id == created.id }
+        if let entry {
+            XCTAssertTrue(entry.isDeleted, "Document present in delta after delete but not flagged deleted")
+        }
+        let liveCopy = delta.documents.first { $0.id == created.id && !$0.isDeleted }
+        XCTAssertNil(liveCopy, "Deleted document reappeared as a live entry in the delta")
     }
 
     // MARK: - Helpers

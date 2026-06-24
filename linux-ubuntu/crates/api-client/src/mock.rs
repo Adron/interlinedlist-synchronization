@@ -22,7 +22,7 @@ impl MockApiClient {
     pub fn new() -> Self {
         Self {
             documents: Mutex::new(HashMap::new()),
-            login_token: "session=mock-session-token".to_string(),
+            login_token: "il_tok_mock-bearer-token".to_string(),
             fail_next: Mutex::new(None),
             delta_response: Mutex::new(None),
         }

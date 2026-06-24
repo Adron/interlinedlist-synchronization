@@ -362,7 +362,7 @@ public sealed class SyncEngine : BackgroundService
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (entry.Deleted)
+            if (entry.IsDeleted)
             {
                 var existingPath = await _fileMapper.GetPathForDocumentIdAsync(entry.Id, cancellationToken).ConfigureAwait(false);
                 if (existingPath is not null && _fileSystem.File.Exists(existingPath))

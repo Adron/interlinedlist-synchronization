@@ -121,9 +121,15 @@ struct DocumentListEnvelope {
     documents: Vec<DocumentSummary>,
 }
 
+// Wire-format for POST /auth/sync-token response.
+#[derive(Debug, Deserialize)]
+struct SyncTokenResponse {
+    token: String,
+}
+
 #[async_trait]
 pub trait ApiClientTrait: Send + Sync {
-    /// POST /auth/login — returns the raw `session=<value>` cookie string to store.
+    /// POST /auth/sync-token — returns the Bearer token (`il_tok_...`) to store.
     async fn login(&self, email: &str, password: &str) -> Result<String, ApiError>;
     async fn list_documents(&self, account: &str) -> Result<Vec<DocumentSummary>, ApiError>;
     async fn get_document(&self, account: &str, id: &str) -> Result<Document, ApiError>;
@@ -173,8 +179,8 @@ impl ApiClient {
         })
     }
 
-    /// Load the session cookie string (e.g. `session=abc123`) for the given account.
-    async fn session_cookie_for(&self, account: &str) -> Result<String, ApiError> {
+    /// Load the Bearer token for the given account.
+    async fn token_for(&self, account: &str) -> Result<String, ApiError> {
         self.secrets
             .load_token(account)
             .await
@@ -241,28 +247,19 @@ impl ApiClientTrait for ApiClient {
         debug!("logging in as {email}");
         let resp = self
             .http
-            .post(self.url("/auth/login"))
+            .post(self.url("/auth/sync-token"))
             .json(&serde_json::json!({ "email": email, "password": password }))
             .send()
             .await?;
 
         match resp.status() {
             StatusCode::OK => {
-                // The API authenticates via a session cookie; extract the raw `session=<value>`
-                // cookie from Set-Cookie and store it as the account token.
-                let cookie = resp
-                    .headers()
-                    .get_all("set-cookie")
-                    .iter()
-                    .filter_map(|v| v.to_str().ok())
-                    .find(|s| s.starts_with("session="))
-                    .and_then(|s| s.split(';').next())
-                    .map(|s| s.to_string())
-                    .ok_or_else(|| {
-                        ApiError::Auth("login succeeded but no session cookie returned".to_string())
-                    })?;
+                let body: SyncTokenResponse = resp
+                    .json()
+                    .await
+                    .map_err(|e| ApiError::Auth(format!("sync-token response parse error: {e}")))?;
                 info!("login successful for {email}");
-                Ok(cookie)
+                Ok(body.token)
             }
             StatusCode::UNAUTHORIZED => Err(ApiError::Auth("invalid credentials".to_string())),
             StatusCode::BAD_REQUEST => {
@@ -278,12 +275,12 @@ impl ApiClientTrait for ApiClient {
     }
 
     async fn list_documents(&self, account: &str) -> Result<Vec<DocumentSummary>, ApiError> {
-        let cookie = self.session_cookie_for(account).await?;
+        let token = self.token_for(account).await?;
         self.execute_with_retry(|| async {
             let resp = self
                 .http
                 .get(self.url("/documents"))
-                .header("Cookie", &cookie)
+                .header("Authorization", format!("Bearer {token}"))
                 .send()
                 .await?;
             let envelope: DocumentListEnvelope = parse_response(resp).await?;
@@ -293,10 +290,15 @@ impl ApiClientTrait for ApiClient {
     }
 
     async fn get_document(&self, account: &str, id: &str) -> Result<Document, ApiError> {
-        let cookie = self.session_cookie_for(account).await?;
+        let token = self.token_for(account).await?;
         let url = self.url(&format!("/documents/{id}"));
         self.execute_with_retry(|| async {
-            let resp = self.http.get(&url).header("Cookie", &cookie).send().await?;
+            let resp = self
+                .http
+                .get(&url)
+                .header("Authorization", format!("Bearer {token}"))
+                .send()
+                .await?;
             parse_response(resp).await
         })
         .await
@@ -307,12 +309,12 @@ impl ApiClientTrait for ApiClient {
         account: &str,
         req: CreateDocumentRequest,
     ) -> Result<Document, ApiError> {
-        let cookie = self.session_cookie_for(account).await?;
+        let token = self.token_for(account).await?;
         self.execute_with_retry(|| async {
             let resp = self
                 .http
                 .post(self.url("/documents"))
-                .header("Cookie", &cookie)
+                .header("Authorization", format!("Bearer {token}"))
                 .json(&req)
                 .send()
                 .await?;
@@ -328,13 +330,13 @@ impl ApiClientTrait for ApiClient {
         id: &str,
         req: UpdateDocumentRequest,
     ) -> Result<Document, ApiError> {
-        let cookie = self.session_cookie_for(account).await?;
+        let token = self.token_for(account).await?;
         let url = self.url(&format!("/documents/{id}"));
         self.execute_with_retry(|| async {
             let resp = self
                 .http
                 .patch(&url)
-                .header("Cookie", &cookie)
+                .header("Authorization", format!("Bearer {token}"))
                 .json(&req)
                 .send()
                 .await?;
@@ -345,13 +347,13 @@ impl ApiClientTrait for ApiClient {
     }
 
     async fn delete_document(&self, account: &str, id: &str) -> Result<(), ApiError> {
-        let cookie = self.session_cookie_for(account).await?;
+        let token = self.token_for(account).await?;
         let url = self.url(&format!("/documents/{id}"));
         self.execute_with_retry(|| async {
             let resp = self
                 .http
                 .delete(&url)
-                .header("Cookie", &cookie)
+                .header("Authorization", format!("Bearer {token}"))
                 .send()
                 .await?;
             match resp.status() {
@@ -359,7 +361,7 @@ impl ApiClientTrait for ApiClient {
                 StatusCode::NOT_FOUND => Err(ApiError::NotFound {
                     resource: url.clone(),
                 }),
-                StatusCode::UNAUTHORIZED => Err(ApiError::Auth("session rejected".to_string())),
+                StatusCode::UNAUTHORIZED => Err(ApiError::Auth("token rejected".to_string())),
                 StatusCode::TOO_MANY_REQUESTS => {
                     let retry = retry_after(&resp);
                     Err(ApiError::RateLimited {
@@ -381,10 +383,13 @@ impl ApiClientTrait for ApiClient {
         account: &str,
         since: Option<DateTime<Utc>>,
     ) -> Result<DeltaResponse, ApiError> {
-        let cookie = self.session_cookie_for(account).await?;
+        let token = self.token_for(account).await?;
         let base_url = self.url("/documents/sync");
         self.execute_with_retry(|| async {
-            let mut req = self.http.get(&base_url).header("Cookie", &cookie);
+            let mut req = self
+                .http
+                .get(&base_url)
+                .header("Authorization", format!("Bearer {token}"));
             if let Some(ts) = since {
                 req = req.query(&[("lastSyncAt", ts.to_rfc3339())]);
             }
@@ -403,7 +408,7 @@ async fn parse_response<T: serde::de::DeserializeOwned>(
         StatusCode::NOT_FOUND => Err(ApiError::NotFound {
             resource: resp.url().to_string(),
         }),
-        StatusCode::UNAUTHORIZED => Err(ApiError::Auth("session rejected".to_string())),
+        StatusCode::UNAUTHORIZED => Err(ApiError::Auth("token rejected".to_string())),
         StatusCode::CONFLICT => {
             let body = resp.text().await.unwrap_or_default();
             Err(ApiError::Conflict(body))
@@ -452,9 +457,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let secrets = Arc::new(FileSecretStore::new(dir.path().to_path_buf()));
         let account = "test@example.com".to_string();
-        // Store the cookie as it would be stored after login.
         secrets
-            .store_token(&account, "session=test-session-token")
+            .store_token(&account, "il_tok_test-bearer-token")
             .await
             .unwrap();
 
@@ -474,20 +478,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn login_returns_session_cookie_on_200() {
+    async fn login_returns_bearer_token_on_200() {
         let mut ctx = make_context().await;
         let _m = ctx
             .server
-            .mock("POST", "/auth/login")
+            .mock("POST", "/auth/sync-token")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_header("set-cookie", "session=tok-abc; Path=/; HttpOnly")
-            .with_body(r#"{"message":"ok","user":{"id":"u1","email":"test@example.com"}}"#)
+            .with_body(r#"{"token":"il_tok_abc123","message":"Sync token created."}"#)
             .create_async()
             .await;
 
         let token = ctx.client.login("test@example.com", "pass").await.unwrap();
-        assert_eq!(token, "session=tok-abc");
+        assert_eq!(token, "il_tok_abc123");
     }
 
     #[tokio::test]
@@ -495,7 +498,7 @@ mod tests {
         let mut ctx = make_context().await;
         let _m = ctx
             .server
-            .mock("POST", "/auth/login")
+            .mock("POST", "/auth/sync-token")
             .with_status(401)
             .create_async()
             .await;
@@ -509,7 +512,7 @@ mod tests {
         let mut ctx = make_context().await;
         let _m = ctx
             .server
-            .mock("POST", "/auth/login")
+            .mock("POST", "/auth/sync-token")
             .with_status(400)
             .with_header("content-type", "application/json")
             .with_body(r#"{"error":"Email and password are required"}"#)
@@ -527,7 +530,7 @@ mod tests {
         let _m = ctx
             .server
             .mock("GET", "/documents")
-            .match_header("cookie", "session=test-session-token")
+            .match_header("authorization", "Bearer il_tok_test-bearer-token")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(body)
@@ -724,7 +727,7 @@ mod tests {
         let _m = ctx
             .server
             .mock("GET", "/documents/sync")
-            .match_header("cookie", "session=test-session-token")
+            .match_header("authorization", "Bearer il_tok_test-bearer-token")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(body)

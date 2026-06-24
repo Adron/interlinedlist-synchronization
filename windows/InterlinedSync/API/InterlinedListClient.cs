@@ -1,6 +1,7 @@
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using InterlinedSync.API.Models;
 using InterlinedSync.Configuration;
 using Microsoft.Extensions.Logging;
@@ -8,21 +9,9 @@ using Microsoft.Extensions.Options;
 
 namespace InterlinedSync.API;
 
-/// <summary>
-/// Default <see cref="IInterlinedListClient"/>.
-/// Phase 2 wired up <c>POST /api/auth/login</c>; Phase 3 adds the document
-/// listing and fetch endpoints used by the pull engine.
-/// </summary>
-/// <remarks>
-/// The <see cref="HttpClient"/> is supplied by <c>IHttpClientFactory</c> so we
-/// never new one up directly and tests can inject <c>MockHttpMessageHandler</c>.
-/// </remarks>
 public sealed class InterlinedListClient : IInterlinedListClient
 {
-    /// <summary>Relative URL of the documents collection endpoint.</summary>
     public const string DocumentsEndpoint = "/api/documents";
-
-    /// <summary>Relative URL of the incremental sync endpoint.</summary>
     public const string SyncEndpoint = "/api/documents/sync";
 
     private static readonly JsonSerializerOptions JsonOptions = new()
@@ -51,7 +40,7 @@ public sealed class InterlinedListClient : IInterlinedListClient
         ArgumentException.ThrowIfNullOrEmpty(username);
         ArgumentException.ThrowIfNullOrEmpty(password);
 
-        _logger.LogInformation("Sending login request for user {Username}.", username);
+        _logger.LogInformation("Sending sync-token request for user {Email}.", username);
 
         HttpResponseMessage response;
         try
@@ -95,6 +84,7 @@ public sealed class InterlinedListClient : IInterlinedListClient
             throw new ApiException("Login response did not contain a token.", response.StatusCode);
         }
 
+        _logger.LogDebug("Acquired Bearer token {Masked}.", MaskToken(payload.Token));
         return payload;
     }
 
@@ -104,11 +94,11 @@ public sealed class InterlinedListClient : IInterlinedListClient
 
         var response = await SendAsync(HttpMethod.Get, DocumentsEndpoint, cancellationToken).ConfigureAwait(false);
 
-        IReadOnlyList<Document>? payload;
+        DocumentListEnvelope? envelope;
         try
         {
-            payload = await response.Content
-                .ReadFromJsonAsync<IReadOnlyList<Document>>(JsonOptions, cancellationToken)
+            envelope = await response.Content
+                .ReadFromJsonAsync<DocumentListEnvelope>(JsonOptions, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (JsonException ex)
@@ -116,8 +106,12 @@ public sealed class InterlinedListClient : IInterlinedListClient
             _logger.LogError(ex, "Document list response was not valid JSON.");
             throw new ApiException("Document list response was not valid JSON.", response.StatusCode, ex);
         }
+        finally
+        {
+            response.Dispose();
+        }
 
-        return payload ?? Array.Empty<Document>();
+        return envelope?.Documents ?? Array.Empty<Document>();
     }
 
     public async Task<Document> GetDocumentAsync(string documentId, CancellationToken cancellationToken = default)
@@ -141,10 +135,14 @@ public sealed class InterlinedListClient : IInterlinedListClient
             _logger.LogError(ex, "Document {DocumentId} response was not valid JSON.", documentId);
             throw new ApiException($"Document {documentId} response was not valid JSON.", response.StatusCode, ex);
         }
+        finally
+        {
+            response.Dispose();
+        }
 
         if (payload is null)
         {
-            throw new ApiException($"Document {documentId} response was empty.", response.StatusCode);
+            throw new ApiException($"Document {documentId} response was empty.", System.Net.HttpStatusCode.OK);
         }
 
         return payload;
@@ -160,7 +158,7 @@ public sealed class InterlinedListClient : IInterlinedListClient
         var body = new DocumentMutation(title, content);
         var response = await SendJsonAsync(HttpMethod.Post, DocumentsEndpoint, body, cancellationToken).ConfigureAwait(false);
 
-        return await ReadDocumentAsync(response, "create", cancellationToken).ConfigureAwait(false);
+        return await ReadDocumentEnvelopeAsync(response, "create", cancellationToken).ConfigureAwait(false);
     }
 
     public async Task<Document> UpdateDocumentAsync(string documentId, string title, string content, CancellationToken cancellationToken = default)
@@ -175,7 +173,7 @@ public sealed class InterlinedListClient : IInterlinedListClient
         var body = new DocumentMutation(title, content);
         var response = await SendJsonAsync(HttpMethod.Patch, path, body, cancellationToken).ConfigureAwait(false);
 
-        return await ReadDocumentAsync(response, "update", cancellationToken).ConfigureAwait(false);
+        return await ReadDocumentEnvelopeAsync(response, "update", cancellationToken).ConfigureAwait(false);
     }
 
     public async Task DeleteDocumentAsync(string documentId, CancellationToken cancellationToken = default)
@@ -325,15 +323,15 @@ public sealed class InterlinedListClient : IInterlinedListClient
         return response;
     }
 
-    private async Task<Document> ReadDocumentAsync(HttpResponseMessage response, string operation, CancellationToken cancellationToken)
+    private async Task<Document> ReadDocumentEnvelopeAsync(HttpResponseMessage response, string operation, CancellationToken cancellationToken)
     {
         try
         {
-            Document? payload;
+            DocumentEnvelope? envelope;
             try
             {
-                payload = await response.Content
-                    .ReadFromJsonAsync<Document>(JsonOptions, cancellationToken)
+                envelope = await response.Content
+                    .ReadFromJsonAsync<DocumentEnvelope>(JsonOptions, cancellationToken)
                     .ConfigureAwait(false);
             }
             catch (JsonException ex)
@@ -342,12 +340,12 @@ public sealed class InterlinedListClient : IInterlinedListClient
                 throw new ApiException($"{operation} response was not valid JSON.", response.StatusCode, ex);
             }
 
-            if (payload is null)
+            if (envelope?.Document is null)
             {
-                throw new ApiException($"{operation} response was empty.", response.StatusCode);
+                throw new ApiException($"{operation} response did not contain a document.", response.StatusCode);
             }
 
-            return payload;
+            return envelope.Document;
         }
         finally
         {
@@ -355,5 +353,23 @@ public sealed class InterlinedListClient : IInterlinedListClient
         }
     }
 
-    private sealed record DocumentMutation(string Title, string Content);
+    private static string MaskToken(string token)
+    {
+        if (token.Length <= 12)
+        {
+            return "***";
+        }
+        return string.Concat(token.AsSpan(0, 8), "...", token.AsSpan(token.Length - 4));
+    }
+
+    private sealed record DocumentMutation(
+        [property: JsonPropertyName("title")] string Title,
+        [property: JsonPropertyName("content")] string Content);
+
+    private sealed record DocumentListEnvelope(
+        [property: JsonPropertyName("documents")] IReadOnlyList<Document>? Documents);
+
+    private sealed record DocumentEnvelope(
+        [property: JsonPropertyName("message")] string? Message,
+        [property: JsonPropertyName("document")] Document? Document);
 }

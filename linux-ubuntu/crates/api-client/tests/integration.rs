@@ -15,8 +15,8 @@ fn skip_if_unconfigured() -> Option<(String, String, String)> {
 }
 
 // INTERLINEDLIST_API_BASE_URL in .env is "https://interlinedlist.com/" (no /api segment).
-// ApiClient::url() trims trailing slash then prepends paths like "/auth/login", producing
-// "https://interlinedlist.com/auth/login" — missing the required /api prefix.
+// ApiClient::url() trims trailing slash then prepends paths like "/auth/sync-token", producing
+// "https://interlinedlist.com/auth/sync-token" — missing the required /api prefix.
 // This function normalises: strips trailing slash, appends /api if absent.
 fn normalise_base_url(raw: &str) -> String {
     let trimmed = raw.trim_end_matches('/');
@@ -56,14 +56,14 @@ async fn make_live_client(email: &str, password: &str, base_url: &str) -> TestCl
     };
     let client = ApiClient::new(config, secrets.clone()).expect("ApiClient::new");
 
-    let session_cookie = client
+    let bearer_token = client
         .login(email, password)
         .await
         .expect("login during test setup");
     secrets
-        .store_token(email, &session_cookie)
+        .store_token(email, &bearer_token)
         .await
-        .expect("store session cookie");
+        .expect("store bearer token");
 
     TestClient {
         client,
@@ -127,14 +127,10 @@ async fn login_returns_token() {
 
     let result = client.login(&email, &password).await;
     assert!(result.is_ok(), "login failed: {:?}", result.unwrap_err());
-    let cookie = result.unwrap();
+    let token = result.unwrap();
     assert!(
-        cookie.starts_with("session="),
-        "expected session= cookie, got: {cookie:?}"
-    );
-    assert!(
-        cookie.len() > "session=".len(),
-        "session cookie value must be non-empty"
+        !token.is_empty(),
+        "Bearer token must be non-empty, got: {token:?}"
     );
 }
 

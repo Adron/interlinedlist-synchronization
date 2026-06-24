@@ -193,7 +193,7 @@ final class SyncEngineTests: XCTestCase {
                 documents: [
                     DocumentDelta(
                         id: "r2", title: "Drop", content: nil,
-                        folderId: nil, updatedAt: date(2), deleted: true
+                        folderId: nil, updatedAt: date(2), deletedAt: date(2)
                     )
                 ]
             )

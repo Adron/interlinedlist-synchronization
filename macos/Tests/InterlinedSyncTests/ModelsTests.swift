@@ -34,16 +34,33 @@ final class ModelsTests: XCTestCase {
         {"id":"d4","title":"Live","content":"body","folderId":null,"updatedAt":"1970-01-01T00:00:00Z"}
         """.utf8)
         let delta = try decoder.decode(DocumentDelta.self, from: json)
-        XCTAssertFalse(delta.deleted)
+        XCTAssertFalse(delta.isDeleted)
         XCTAssertEqual(delta.content, "body")
     }
 
-    func testDocumentDelta_tombstoneOmitsContent() throws {
+    func testDocumentDelta_tombstoneCarriesDeletedAt() throws {
         let json = Data("""
-        {"id":"d5","title":"Gone","folderId":null,"updatedAt":"1970-01-01T00:00:00Z","deleted":true}
+        {"id":"d5","title":"Gone","folderId":null,"updatedAt":"1970-01-01T00:00:00Z","deletedAt":"1970-01-01T00:00:05Z"}
         """.utf8)
         let delta = try decoder.decode(DocumentDelta.self, from: json)
-        XCTAssertTrue(delta.deleted)
+        XCTAssertTrue(delta.isDeleted)
         XCTAssertNil(delta.content)
+    }
+
+    func testDocumentDTO_decodesContentHashWhenPresent() throws {
+        let json = Data("""
+        {"id":"d6","title":"Hashed","content":"body","folderId":null,"updatedAt":"1970-01-01T00:00:00Z","contentHash":"abc123"}
+        """.utf8)
+        let dto = try decoder.decode(DocumentDTO.self, from: json)
+        XCTAssertEqual(dto.contentHash, "abc123")
+    }
+
+    func testDeltaResponse_decodesLastSyncAtKey() throws {
+        let json = Data("""
+        {"lastSyncAt":"1970-01-01T00:00:10Z","documents":[]}
+        """.utf8)
+        let delta = try decoder.decode(DeltaResponse.self, from: json)
+        XCTAssertEqual(delta.syncedAt, Date(timeIntervalSince1970: 10))
+        XCTAssertTrue(delta.documents.isEmpty)
     }
 }

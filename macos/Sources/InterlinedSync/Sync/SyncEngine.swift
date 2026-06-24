@@ -139,8 +139,8 @@ actor SyncEngine {
 
     private func runDeltaCycle(since: Date) async throws -> SyncOutcome {
         let delta = try await client.fetchDelta(since: since)
-        let tombstones = delta.documents.filter { $0.deleted }
-        let updates = delta.documents.filter { !$0.deleted }.map(Self.makeDocument)
+        let tombstones = delta.documents.filter { $0.isDeleted }
+        let updates = delta.documents.filter { !$0.isDeleted }.map(Self.makeDocument)
         let updatedIDs = Set(updates.map { $0.id })
 
         for tombstone in tombstones {

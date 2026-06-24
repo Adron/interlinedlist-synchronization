@@ -47,9 +47,10 @@ public static class AppConstants
     public const string DefaultApiBaseUrl = "https://interlinedlist.com";
 
     /// <summary>
-    /// Default login endpoint, relative to the API base URL.
+    /// Default login endpoint, relative to the API base URL. Uses the sync-token
+    /// flow intended for native/CLI/mobile clients (returns a Bearer token).
     /// </summary>
-    public const string LoginEndpoint = "/api/auth/login";
+    public const string LoginEndpoint = "/api/auth/sync-token";
 
     /// <summary>
     /// PasswordVault resource name used to scope the credential to this app.

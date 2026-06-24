@@ -43,18 +43,20 @@ actor InterlinedListClient: DocumentFetching, DocumentMutating {
     func updateDocument(id: String, update: DocumentUpdateRequest) async throws -> DocumentDTO {
         var request = try authenticatedRequest(path: "/api/documents/\(id)", method: "PATCH")
         try attachJSON(update, to: &request)
-        return try await perform(request)
+        let envelope: DocumentEnvelope = try await perform(request)
+        return envelope.document
     }
 
     func createDocument(_ update: DocumentUpdateRequest) async throws -> DocumentDTO {
         var request = try authenticatedRequest(path: "/api/documents", method: "POST")
         try attachJSON(update, to: &request)
-        return try await perform(request)
+        let envelope: DocumentEnvelope = try await perform(request)
+        return envelope.document
     }
 
     func deleteDocument(id: String) async throws {
         let request = try authenticatedRequest(path: "/api/documents/\(id)", method: "DELETE")
-        try await performVoid(request)
+        try await performDelete(request)
     }
 
     // MARK: - Private
@@ -79,7 +81,10 @@ actor InterlinedListClient: DocumentFetching, DocumentMutating {
     }
 
     private func resolveURL(path: String, query: [URLQueryItem]?) throws -> URL {
-        let base = baseURL.appendingPathComponent(path)
+        var trimmed = baseURL.absoluteString
+        while trimmed.hasSuffix("/") { trimmed.removeLast() }
+        let suffix = path.hasPrefix("/") ? path : "/" + path
+        guard let base = URL(string: trimmed + suffix) else { throw SyncError.mapping }
         guard let query, !query.isEmpty else { return base }
         guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
             throw SyncError.mapping
@@ -107,8 +112,25 @@ actor InterlinedListClient: DocumentFetching, DocumentMutating {
         }
     }
 
-    private func performVoid(_ request: URLRequest) async throws {
-        _ = try await send(request)
+    private func performDelete(_ request: URLRequest) async throws {
+        let data: Data
+        let urlResponse: URLResponse
+        do {
+            (data, urlResponse) = try await session.data(for: request)
+        } catch {
+            throw SyncError.network(error)
+        }
+        guard let http = urlResponse as? HTTPURLResponse else {
+            throw SyncError.network(URLError(.badServerResponse))
+        }
+        switch http.statusCode {
+        case 200...299, 404, 410:
+            _ = data
+        case 401, 403:
+            throw SyncError.notAuthenticated
+        default:
+            throw SyncError.network(URLError(.badServerResponse))
+        }
     }
 
     private func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {

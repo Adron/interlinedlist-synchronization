@@ -1,11 +1,11 @@
+using System.Text.Json.Serialization;
+
 namespace InterlinedSync.API.Models;
 
-/// <summary>
-/// Server document representation used by the sync engine.
-/// </summary>
 public sealed record Document(
-    string Id,
-    string Title,
-    string? FolderId,
-    string Content,
-    DateTimeOffset UpdatedAt);
+    [property: JsonPropertyName("id")] string Id,
+    [property: JsonPropertyName("title")] string Title,
+    [property: JsonPropertyName("folderId")] string? FolderId,
+    [property: JsonPropertyName("content")] string Content,
+    [property: JsonPropertyName("updatedAt")] DateTimeOffset UpdatedAt,
+    [property: JsonPropertyName("contentHash")] string? ContentHash = null);

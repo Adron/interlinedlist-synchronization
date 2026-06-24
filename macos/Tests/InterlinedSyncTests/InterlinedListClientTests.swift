@@ -81,7 +81,7 @@ final class InterlinedListClientTests: XCTestCase {
         MockURLProtocol.requestHandler = { [encoder] request in
             XCTAssertEqual(request.httpMethod, "POST")
             XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
-            let data = try encoder.encode(expected)
+            let data = try encoder.encode(DocumentEnvelope(message: "Created", document: expected))
             return (self.response(for: request, status: 201), data)
         }
         let doc = try await client.createDocument(DocumentUpdateRequest(title: "Draft", content: "..."))
@@ -101,7 +101,7 @@ final class InterlinedListClientTests: XCTestCase {
                 XCTAssertEqual(decoded.content, "B")
             }
             let stub = DocumentDTO(id: "x", title: "T", content: "B", folderId: nil, updatedAt: .distantPast)
-            return (self.response(for: request, status: 201), try encoder.encode(stub))
+            return (self.response(for: request, status: 201), try encoder.encode(DocumentEnvelope(message: nil, document: stub)))
         }
         _ = try await client.createDocument(update)
     }
@@ -127,7 +127,7 @@ final class InterlinedListClientTests: XCTestCase {
         MockURLProtocol.requestHandler = { [encoder] request in
             XCTAssertEqual(request.httpMethod, "PATCH")
             XCTAssertTrue(request.url?.path.hasSuffix("/abc") ?? false)
-            let data = try encoder.encode(expected)
+            let data = try encoder.encode(DocumentEnvelope(message: "Updated", document: expected))
             return (self.response(for: request, status: 200), data)
         }
         let doc = try await client.updateDocument(
@@ -145,7 +145,7 @@ final class InterlinedListClientTests: XCTestCase {
             documents: [
                 DocumentDelta(
                     id: "d1", title: "Delta One", content: "alpha",
-                    folderId: "f1", updatedAt: fixtureDate, deleted: false
+                    folderId: "f1", updatedAt: fixtureDate, deletedAt: nil
                 )
             ]
         )
@@ -176,11 +176,11 @@ final class InterlinedListClientTests: XCTestCase {
             documents: [
                 DocumentDelta(
                     id: "live", title: "Live", content: "body",
-                    folderId: nil, updatedAt: fixtureDate, deleted: false
+                    folderId: nil, updatedAt: fixtureDate, deletedAt: nil
                 ),
                 DocumentDelta(
                     id: "gone", title: "Gone", content: nil,
-                    folderId: nil, updatedAt: fixtureDate, deleted: true
+                    folderId: nil, updatedAt: fixtureDate, deletedAt: Date(timeIntervalSince1970: 2000)
                 )
             ]
         )
@@ -189,7 +189,7 @@ final class InterlinedListClientTests: XCTestCase {
         }
         let delta = try await client.fetchDelta(since: fixtureDate)
         XCTAssertEqual(delta.documents.count, 2)
-        let tombstone = delta.documents.first { $0.deleted }
+        let tombstone = delta.documents.first { $0.isDeleted }
         XCTAssertEqual(tombstone?.id, "gone")
         XCTAssertNil(tombstone?.content)
     }

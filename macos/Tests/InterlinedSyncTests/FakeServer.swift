@@ -88,7 +88,7 @@ final class FakeServer: @unchecked Sendable {
                 id: id, title: req.title, content: req.content, folderId: nil, updatedAt: Date()
             )
             store[id] = created
-            return (response(request, 201), try encoder.encode(created))
+            return (response(request, 201), try encoder.encode(DocumentEnvelope(message: "Created", document: created)))
 
         case let ("PATCH", id?):
             updateCount += 1
@@ -98,12 +98,12 @@ final class FakeServer: @unchecked Sendable {
                 id: id, title: req.title, content: req.content, folderId: nil, updatedAt: Date()
             )
             store[id] = updated
-            return (response(request, 200), try encoder.encode(updated))
+            return (response(request, 200), try encoder.encode(DocumentEnvelope(message: "Updated", document: updated)))
 
         case let ("DELETE", id?):
             deleteCount += 1
             store[id] = nil
-            return (response(request, 204), Data())
+            return (response(request, 200), Data())
 
         default:
             return (response(request, 404), Data())

@@ -34,9 +34,28 @@ actor AuthManager {
 
     private struct LoginResponse: Decodable {
         let token: String
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            if let value = try container.decodeIfPresent(String.self, forKey: .token) {
+                token = value
+            } else if let value = try container.decodeIfPresent(String.self, forKey: .syncToken) {
+                token = value
+            } else if let value = try container.decodeIfPresent(String.self, forKey: .accessToken) {
+                token = value
+            } else {
+                throw AuthError.malformedResponse
+            }
+        }
+
+        private enum CodingKeys: String, CodingKey {
+            case token
+            case syncToken
+            case accessToken
+        }
     }
 
-    private static let loginPath = "/api/auth/login"
+    private static let loginPath = "/api/auth/sync-token"
     private static let keychainAccount = "session-token"
 
     private let baseURL: URL
@@ -62,7 +81,7 @@ actor AuthManager {
 
     @discardableResult
     func login(email: String, password: String) async throws -> String {
-        var request = URLRequest(url: baseURL.appendingPathComponent(Self.loginPath))
+        var request = URLRequest(url: Self.endpoint(baseURL, Self.loginPath))
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -112,5 +131,12 @@ actor AuthManager {
 
     func logout() async {
         try? tokenStorage.delete(for: Self.keychainAccount)
+    }
+
+    private static func endpoint(_ base: URL, _ path: String) -> URL {
+        var trimmed = base.absoluteString
+        while trimmed.hasSuffix("/") { trimmed.removeLast() }
+        let suffix = path.hasPrefix("/") ? path : "/" + path
+        return URL(string: trimmed + suffix) ?? base.appendingPathComponent(path)
     }
 }
