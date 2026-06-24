@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
 
 # Each build job is independent so all three platforms compile in parallel.
 # The final job collects all artifacts and creates a draft GitHub Release.
@@ -338,8 +339,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          PRERELEASE_FLAG=""
+          if [[ "${{ github.ref_name }}" == *-* ]]; then
+            PRERELEASE_FLAG="--prerelease"
+          fi
           gh release create "${{ github.ref_name }}" \
             --title "InterlinedList Sync ${{ github.ref_name }}" \
             --notes-file release-notes.md \
             --draft \
+            $PRERELEASE_FLAG \
             release-artifacts/*
