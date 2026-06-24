@@ -125,6 +125,6 @@ final class DocumentMapperTests: XCTestCase {
     // MARK: - Helpers
 
     private func makeDocument(id: String, title: String, body: String = "") -> DocumentDTO {
-        DocumentDTO(id: id, title: title, body: body, updatedAt: Date(timeIntervalSince1970: 0))
+        DocumentDTO(id: id, title: title, content: body, folderId: nil, updatedAt: Date(timeIntervalSince1970: 0))
     }
 }

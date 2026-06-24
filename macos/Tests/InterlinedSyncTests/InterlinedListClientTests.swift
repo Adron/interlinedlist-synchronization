@@ -24,7 +24,7 @@ final class InterlinedListClientTests: XCTestCase {
     // MARK: - fetchDocuments
 
     func testFetchDocuments_success_returnsDecodedDocuments() async throws {
-        let expected = DocumentDTO(id: "1", title: "Note", body: "Hello", updatedAt: fixtureDate)
+        let expected = DocumentDTO(id: "1", title: "Note", content: "Hello", folderId: nil, updatedAt: fixtureDate)
         MockURLProtocol.requestHandler = { [encoder] request in
             XCTAssertEqual(request.httpMethod, "GET")
             XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer test-token")
@@ -77,19 +77,19 @@ final class InterlinedListClientTests: XCTestCase {
     // MARK: - createDocument
 
     func testCreateDocument_success_returnsDTO() async throws {
-        let expected = DocumentDTO(id: "new", title: "Draft", body: "...", updatedAt: fixtureDate)
+        let expected = DocumentDTO(id: "new", title: "Draft", content: "...", folderId: nil, updatedAt: fixtureDate)
         MockURLProtocol.requestHandler = { [encoder] request in
             XCTAssertEqual(request.httpMethod, "POST")
             XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "application/json")
             let data = try encoder.encode(expected)
             return (self.response(for: request, status: 201), data)
         }
-        let doc = try await client.createDocument(DocumentUpdateRequest(title: "Draft", body: "..."))
+        let doc = try await client.createDocument(DocumentUpdateRequest(title: "Draft", content: "..."))
         XCTAssertEqual(doc, expected)
     }
 
     func testCreateDocument_sendsCorrectBody() async throws {
-        let update = DocumentUpdateRequest(title: "T", body: "B")
+        let update = DocumentUpdateRequest(title: "T", content: "B")
         MockURLProtocol.requestHandler = { [encoder] request in
             // URLSession converts httpBody to httpBodyStream inside URLProtocol; read from
             // whichever is available.
@@ -98,9 +98,9 @@ final class InterlinedListClientTests: XCTestCase {
             if let bodyData {
                 let decoded = try JSONDecoder().decode(DocumentUpdateRequest.self, from: bodyData)
                 XCTAssertEqual(decoded.title, "T")
-                XCTAssertEqual(decoded.body, "B")
+                XCTAssertEqual(decoded.content, "B")
             }
-            let stub = DocumentDTO(id: "x", title: "T", body: "B", updatedAt: .distantPast)
+            let stub = DocumentDTO(id: "x", title: "T", content: "B", folderId: nil, updatedAt: .distantPast)
             return (self.response(for: request, status: 201), try encoder.encode(stub))
         }
         _ = try await client.createDocument(update)
@@ -123,17 +123,75 @@ final class InterlinedListClientTests: XCTestCase {
     // MARK: - updateDocument
 
     func testUpdateDocument_success_returnsDTO() async throws {
-        let expected = DocumentDTO(id: "abc", title: "Updated", body: "new", updatedAt: fixtureDate)
+        let expected = DocumentDTO(id: "abc", title: "Updated", content: "new", folderId: nil, updatedAt: fixtureDate)
         MockURLProtocol.requestHandler = { [encoder] request in
-            XCTAssertEqual(request.httpMethod, "PUT")
+            XCTAssertEqual(request.httpMethod, "PATCH")
             XCTAssertTrue(request.url?.path.hasSuffix("/abc") ?? false)
             let data = try encoder.encode(expected)
             return (self.response(for: request, status: 200), data)
         }
         let doc = try await client.updateDocument(
-            id: "abc", update: DocumentUpdateRequest(title: "Updated", body: "new")
+            id: "abc", update: DocumentUpdateRequest(title: "Updated", content: "new")
         )
         XCTAssertEqual(doc, expected)
+    }
+
+    // MARK: - fetchDelta
+
+    func testFetchDelta_parsesResponse() async throws {
+        let syncedAt = Date(timeIntervalSince1970: 1000)
+        let expected = DeltaResponse(
+            syncedAt: syncedAt,
+            documents: [
+                DocumentDelta(
+                    id: "d1", title: "Delta One", content: "alpha",
+                    folderId: "f1", updatedAt: fixtureDate, deleted: false
+                )
+            ]
+        )
+        MockURLProtocol.requestHandler = { [encoder] request in
+            XCTAssertEqual(request.httpMethod, "GET")
+            XCTAssertEqual(request.url?.path, "/api/documents/sync")
+            return (self.response(for: request, status: 200), try encoder.encode(expected))
+        }
+        let delta = try await client.fetchDelta(since: Date(timeIntervalSince1970: 0))
+        XCTAssertEqual(delta, expected)
+    }
+
+    func testFetchDelta_emptySince() async throws {
+        MockURLProtocol.requestHandler = { [encoder] request in
+            let components = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)
+            let hasQuery = components?.queryItems?.contains { $0.name == "lastSyncAt" } ?? false
+            XCTAssertFalse(hasQuery, "Expected no lastSyncAt query when since is nil")
+            let payload = DeltaResponse(syncedAt: .distantPast, documents: [])
+            return (self.response(for: request, status: 200), try encoder.encode(payload))
+        }
+        let delta = try await client.fetchDelta(since: nil)
+        XCTAssertTrue(delta.documents.isEmpty)
+    }
+
+    func testFetchDelta_withTombstones() async throws {
+        let expected = DeltaResponse(
+            syncedAt: Date(timeIntervalSince1970: 2000),
+            documents: [
+                DocumentDelta(
+                    id: "live", title: "Live", content: "body",
+                    folderId: nil, updatedAt: fixtureDate, deleted: false
+                ),
+                DocumentDelta(
+                    id: "gone", title: "Gone", content: nil,
+                    folderId: nil, updatedAt: fixtureDate, deleted: true
+                )
+            ]
+        )
+        MockURLProtocol.requestHandler = { [encoder] request in
+            return (self.response(for: request, status: 200), try encoder.encode(expected))
+        }
+        let delta = try await client.fetchDelta(since: fixtureDate)
+        XCTAssertEqual(delta.documents.count, 2)
+        let tombstone = delta.documents.first { $0.deleted }
+        XCTAssertEqual(tombstone?.id, "gone")
+        XCTAssertNil(tombstone?.content)
     }
 
     // MARK: - deleteDocument

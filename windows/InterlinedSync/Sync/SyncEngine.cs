@@ -78,20 +78,46 @@ public sealed class SyncEngine : BackgroundService
                 _fileSystem.Directory.CreateDirectory(prefs.SyncFolder);
                 await _repository.InitializeAsync(cancellationToken).ConfigureAwait(false);
 
-                IReadOnlyList<Document> remoteDocuments;
-                try
-                {
-                    remoteDocuments = await _client.GetDocumentsAsync(cancellationToken).ConfigureAwait(false);
-                }
-                catch (ApiException ex)
-                {
-                    _logger.LogWarning(ex, "Pull failed: could not fetch document list.");
-                    _notifier.SetState(SyncState.Error);
-                    await _repository.AppendLogAsync("pull.error", ex.Message, cancellationToken).ConfigureAwait(false);
-                    return SyncCycleResult.ForFailure(ex.Message);
-                }
+                var lastSyncedAt = await _repository.GetLastSyncedAtAsync(cancellationToken).ConfigureAwait(false);
 
-                var result = await ReconcileAsync(prefs.SyncFolder, remoteDocuments, cancellationToken).ConfigureAwait(false);
+                SyncCycleResult result;
+                if (lastSyncedAt is null)
+                {
+                    var startedAt = DateTimeOffset.UtcNow;
+                    IReadOnlyList<Document> remoteDocuments;
+                    try
+                    {
+                        remoteDocuments = await _client.GetDocumentsAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (ApiException ex)
+                    {
+                        _logger.LogWarning(ex, "Pull failed: could not fetch document list.");
+                        _notifier.SetState(SyncState.Error);
+                        await _repository.AppendLogAsync("pull.error", ex.Message, cancellationToken).ConfigureAwait(false);
+                        return SyncCycleResult.ForFailure(ex.Message);
+                    }
+
+                    result = await ReconcileAsync(prefs.SyncFolder, remoteDocuments, cancellationToken).ConfigureAwait(false);
+                    await _repository.SetLastSyncedAtAsync(startedAt, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    DeltaResponse delta;
+                    try
+                    {
+                        delta = await _client.FetchDeltaAsync(lastSyncedAt, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (ApiException ex)
+                    {
+                        _logger.LogWarning(ex, "Pull failed: could not fetch delta.");
+                        _notifier.SetState(SyncState.Error);
+                        await _repository.AppendLogAsync("pull.error", ex.Message, cancellationToken).ConfigureAwait(false);
+                        return SyncCycleResult.ForFailure(ex.Message);
+                    }
+
+                    result = await ReconcileDeltaAsync(prefs.SyncFolder, delta, cancellationToken).ConfigureAwait(false);
+                    await _repository.SetLastSyncedAtAsync(delta.SyncedAt, cancellationToken).ConfigureAwait(false);
+                }
 
                 _notifier.SetState(SyncState.Idle);
                 await _repository.AppendLogAsync(
@@ -318,6 +344,55 @@ public sealed class SyncEngine : BackgroundService
 
             await _repository.DeleteByIdAsync(record.Id, cancellationToken).ConfigureAwait(false);
             deleted++;
+        }
+
+        return new SyncCycleResult(downloaded, updated, deleted, Skipped: false, Error: null);
+    }
+
+    private async Task<SyncCycleResult> ReconcileDeltaAsync(
+        string syncFolder,
+        DeltaResponse delta,
+        CancellationToken cancellationToken)
+    {
+        var downloaded = 0;
+        var updated = 0;
+        var deleted = 0;
+
+        foreach (var entry in delta.Documents)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (entry.Deleted)
+            {
+                var existingPath = await _fileMapper.GetPathForDocumentIdAsync(entry.Id, cancellationToken).ConfigureAwait(false);
+                if (existingPath is not null && _fileSystem.File.Exists(existingPath))
+                {
+                    TryDelete(existingPath);
+                }
+                await _repository.DeleteByIdAsync(entry.Id, cancellationToken).ConfigureAwait(false);
+                deleted++;
+                continue;
+            }
+
+            var doc = new Document(entry.Id, entry.Title, entry.FolderId, entry.Content ?? string.Empty, entry.UpdatedAt);
+            var targetPath = _fileMapper.GetLocalPath(syncFolder, doc.Title);
+            var record = await _repository.GetByIdAsync(entry.Id, cancellationToken).ConfigureAwait(false);
+
+            if (record is null)
+            {
+                await WriteDocumentAsync(doc, targetPath, cancellationToken).ConfigureAwait(false);
+                downloaded++;
+                continue;
+            }
+
+            if (!string.Equals(record.LocalPath, targetPath, StringComparison.OrdinalIgnoreCase)
+                && _fileSystem.File.Exists(record.LocalPath))
+            {
+                TryDelete(record.LocalPath);
+            }
+
+            await WriteDocumentAsync(doc, targetPath, cancellationToken).ConfigureAwait(false);
+            updated++;
         }
 
         return new SyncCycleResult(downloaded, updated, deleted, Skipped: false, Error: null);

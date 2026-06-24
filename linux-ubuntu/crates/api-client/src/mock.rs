@@ -3,11 +3,11 @@ use std::sync::Mutex;
 
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 
 use crate::{
-    ApiClientTrait, ApiError, CreateDocumentRequest, Document, DocumentSummary,
-    UpdateDocumentRequest,
+    ApiClientTrait, ApiError, CreateDocumentRequest, DeltaResponse, Document, DocumentDelta,
+    DocumentSummary, UpdateDocumentRequest,
 };
 
 /// In-memory ApiClient stub for use in sync-engine unit tests.
@@ -15,6 +15,7 @@ pub struct MockApiClient {
     pub documents: Mutex<HashMap<String, Document>>,
     pub login_token: String,
     pub fail_next: Mutex<Option<ApiError>>,
+    pub delta_response: Mutex<Option<DeltaResponse>>,
 }
 
 impl MockApiClient {
@@ -23,6 +24,7 @@ impl MockApiClient {
             documents: Mutex::new(HashMap::new()),
             login_token: "mock-token".to_string(),
             fail_next: Mutex::new(None),
+            delta_response: Mutex::new(None),
         }
     }
 
@@ -32,6 +34,10 @@ impl MockApiClient {
 
     pub fn fail_once(&self, err: ApiError) {
         *self.fail_next.lock().unwrap() = Some(err);
+    }
+
+    pub fn set_delta_response(&self, resp: DeltaResponse) {
+        *self.delta_response.lock().unwrap() = Some(resp);
     }
 
     fn take_failure(&self) -> Option<ApiError> {
@@ -66,6 +72,7 @@ impl ApiClientTrait for MockApiClient {
                 title: d.title.clone(),
                 updated_at: d.updated_at,
                 sha256: d.sha256.clone(),
+                folder_id: d.folder_id.clone(),
             })
             .collect())
     }
@@ -99,6 +106,7 @@ impl ApiClientTrait for MockApiClient {
             content: req.content,
             updated_at: Utc::now(),
             sha256: None,
+            folder_id: None,
         };
         self.documents.lock().unwrap().insert(id, doc.clone());
         Ok(doc)
@@ -132,10 +140,42 @@ impl ApiClientTrait for MockApiClient {
         self.documents.lock().unwrap().remove(id);
         Ok(())
     }
+
+    async fn fetch_delta(
+        &self,
+        _account: &str,
+        _since: Option<DateTime<Utc>>,
+    ) -> Result<DeltaResponse, ApiError> {
+        if let Some(e) = self.take_failure() {
+            return Err(e);
+        }
+        let resp = self
+            .delta_response
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or_else(|| DeltaResponse {
+                synced_at: Utc::now(),
+                documents: self
+                    .documents
+                    .lock()
+                    .unwrap()
+                    .values()
+                    .map(|d| DocumentDelta {
+                        id: d.id.clone(),
+                        title: d.title.clone(),
+                        content: Some(d.content.clone()),
+                        folder_id: d.folder_id.clone(),
+                        updated_at: d.updated_at,
+                        deleted: false,
+                    })
+                    .collect(),
+            });
+        Ok(resp)
+    }
 }
 
 fn uuid_simple() -> String {
-    // Minimal unique ID using timestamp + pointer address — sufficient for tests.
     format!(
         "{:x}",
         std::time::SystemTime::now()

@@ -19,6 +19,8 @@ public sealed class SyncStateRepository : ISyncStateRepository, IAsyncDisposable
     // Round-trip ISO-8601 with offset; matches DateTimeOffset.Parse default.
     private const string TimestampFormat = "O";
 
+    private const string LastSyncedAtKey = "last_synced_at";
+
     private readonly string _connectionString;
     private readonly ILogger<SyncStateRepository> _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
@@ -77,6 +79,11 @@ public sealed class SyncStateRepository : ISyncStateRepository, IAsyncDisposable
                     ts TEXT NOT NULL,
                     event TEXT NOT NULL,
                     detail TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS sync_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
                 );
                 """;
             await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
@@ -243,6 +250,57 @@ public sealed class SyncStateRepository : ISyncStateRepository, IAsyncDisposable
             cmd.Parameters.AddWithValue("$ts", DateTimeOffset.UtcNow.ToString(TimestampFormat, CultureInfo.InvariantCulture));
             cmd.Parameters.AddWithValue("$event", @event);
             cmd.Parameters.AddWithValue("$detail", detail);
+            await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<DateTimeOffset?> GetLastSyncedAtAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var cmd = connection.CreateCommand();
+            cmd.CommandText = "SELECT value FROM sync_metadata WHERE key = $key;";
+            cmd.Parameters.AddWithValue("$key", LastSyncedAtKey);
+            var result = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+            if (result is null || result is DBNull)
+            {
+                return null;
+            }
+            var text = (string)result;
+            return DateTimeOffset.Parse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind);
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task SetLastSyncedAtAsync(DateTimeOffset syncedAt, CancellationToken cancellationToken = default)
+    {
+        await EnsureInitializedAsync(cancellationToken).ConfigureAwait(false);
+
+        await _gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            await using var connection = new SqliteConnection(_connectionString);
+            await connection.OpenAsync(cancellationToken).ConfigureAwait(false);
+            await using var cmd = connection.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO sync_metadata (key, value)
+                VALUES ($key, $value)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value;
+                """;
+            cmd.Parameters.AddWithValue("$key", LastSyncedAtKey);
+            cmd.Parameters.AddWithValue("$value", syncedAt.ToString(TimestampFormat, CultureInfo.InvariantCulture));
             await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
         }
         finally

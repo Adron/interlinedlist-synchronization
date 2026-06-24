@@ -14,6 +14,10 @@ final class FakeServer: @unchecked Sendable {
     private(set) var deleteCount = 0
     var failNextFetch = false
 
+    private var delta: DeltaResponse?
+    private(set) var lastDeltaSince: String??
+    private(set) var deltaFetchCount = 0
+
     private let encoder = JSONEncoder.interlinedList()
     private let decoder = JSONDecoder.interlinedList()
 
@@ -35,7 +39,14 @@ final class FakeServer: @unchecked Sendable {
     func update(id: String, body: String, updatedAt: Date) {
         lock.lock(); defer { lock.unlock() }
         guard let existing = store[id] else { return }
-        store[id] = DocumentDTO(id: id, title: existing.title, body: body, updatedAt: updatedAt)
+        store[id] = DocumentDTO(
+            id: id, title: existing.title, content: body, folderId: existing.folderId, updatedAt: updatedAt
+        )
+    }
+
+    func stageDelta(_ delta: DeltaResponse) {
+        lock.lock(); defer { lock.unlock() }
+        self.delta = delta
     }
 
     func handler() -> (URLRequest) throws -> (HTTPURLResponse, Data) {
@@ -54,6 +65,10 @@ final class FakeServer: @unchecked Sendable {
             ? String(path.dropFirst("/api/documents/".count))
             : nil
 
+        if method == "GET" && path == "/api/documents/sync" {
+            return try routeDelta(request)
+        }
+
         switch (method, idComponent) {
         case ("GET", _):
             if failNextFetch {
@@ -69,15 +84,19 @@ final class FakeServer: @unchecked Sendable {
             let req = try decoder.decode(DocumentUpdateRequest.self, from: body)
             let id = "server-\(nextID)"
             nextID += 1
-            let created = DocumentDTO(id: id, title: req.title, body: req.body, updatedAt: Date())
+            let created = DocumentDTO(
+                id: id, title: req.title, content: req.content, folderId: nil, updatedAt: Date()
+            )
             store[id] = created
             return (response(request, 201), try encoder.encode(created))
 
-        case let ("PUT", id?):
+        case let ("PATCH", id?):
             updateCount += 1
             let body = readBody(request)
             let req = try decoder.decode(DocumentUpdateRequest.self, from: body)
-            let updated = DocumentDTO(id: id, title: req.title, body: req.body, updatedAt: Date())
+            let updated = DocumentDTO(
+                id: id, title: req.title, content: req.content, folderId: nil, updatedAt: Date()
+            )
             store[id] = updated
             return (response(request, 200), try encoder.encode(updated))
 
@@ -89,6 +108,19 @@ final class FakeServer: @unchecked Sendable {
         default:
             return (response(request, 404), Data())
         }
+    }
+
+    private func routeDelta(_ request: URLRequest) throws -> (HTTPURLResponse, Data) {
+        if failNextFetch {
+            failNextFetch = false
+            return (response(request, 500), Data())
+        }
+        deltaFetchCount += 1
+        let since = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
+            .queryItems?.first(where: { $0.name == "lastSyncAt" })?.value
+        lastDeltaSince = .some(since)
+        let payload = delta ?? DeltaResponse(syncedAt: Date(), documents: [])
+        return (response(request, 200), try encoder.encode(payload))
     }
 
     private func readBody(_ request: URLRequest) -> Data {

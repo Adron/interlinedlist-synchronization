@@ -49,4 +49,12 @@ public interface IInterlinedListClient
     /// it means another client has already deleted the document.
     /// </summary>
     Task DeleteDocumentAsync(string documentId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Fetches the incremental delta from <c>GET /api/documents/sync</c>. When
+    /// <paramref name="lastSyncAt"/> is <c>null</c> the query parameter is omitted
+    /// and the server returns the full set; otherwise only entries (including
+    /// tombstones) changed after the timestamp are returned.
+    /// </summary>
+    Task<DeltaResponse> FetchDeltaAsync(DateTimeOffset? lastSyncAt, CancellationToken cancellationToken = default);
 }

@@ -108,6 +108,6 @@ final class ChangeSetTests: XCTestCase {
     }
 
     private func makeRemote(id: String, updatedAt: Date) -> DocumentDTO {
-        DocumentDTO(id: id, title: id, body: "body-\(id)", updatedAt: updatedAt)
+        DocumentDTO(id: id, title: id, content: "body-\(id)", folderId: nil, updatedAt: updatedAt)
     }
 }

@@ -47,4 +47,16 @@ public interface ISyncStateRepository
     /// Appends a row to the <c>sync_log</c> table for diagnostics.
     /// </summary>
     Task AppendLogAsync(string @event, string detail, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the <see cref="API.Models.DeltaResponse.SyncedAt"/> persisted by the most
+    /// recent successful delta pull, or <c>null</c> on the first ever sync.
+    /// </summary>
+    Task<DateTimeOffset?> GetLastSyncedAtAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Persists the <see cref="API.Models.DeltaResponse.SyncedAt"/> timestamp that should be
+    /// sent as <c>?lastSyncAt=</c> on the next delta call.
+    /// </summary>
+    Task SetLastSyncedAtAsync(DateTimeOffset syncedAt, CancellationToken cancellationToken = default);
 }

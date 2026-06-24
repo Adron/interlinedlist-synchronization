@@ -20,8 +20,15 @@ enum SyncStatus: Equatable, Sendable {
 struct SyncOutcome: Sendable, Equatable {
     var documentsChanged: Int
     var conflictCopiesCreated: Int
+    var syncedAt: Date?
 
-    static let unchanged = SyncOutcome(documentsChanged: 0, conflictCopiesCreated: 0)
+    static let unchanged = SyncOutcome(documentsChanged: 0, conflictCopiesCreated: 0, syncedAt: nil)
+
+    init(documentsChanged: Int, conflictCopiesCreated: Int, syncedAt: Date? = nil) {
+        self.documentsChanged = documentsChanged
+        self.conflictCopiesCreated = conflictCopiesCreated
+        self.syncedAt = syncedAt
+    }
 
     var hasChanges: Bool {
         documentsChanged > 0 || conflictCopiesCreated > 0

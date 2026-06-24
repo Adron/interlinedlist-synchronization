@@ -9,7 +9,7 @@ use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, error, info, warn};
 
-use api_client::{ApiClientTrait, CreateDocumentRequest, UpdateDocumentRequest};
+use api_client::{ApiClientTrait, CreateDocumentRequest, DocumentDelta, UpdateDocumentRequest};
 use config_store::{AppConfig, ConflictResolution};
 use file_watcher::FileEvent;
 use notifier::{Notification, Notifier};
@@ -229,31 +229,56 @@ impl SyncEngine {
         self.set_status(SyncStatus::Syncing).await;
         debug!("polling remote for account {}", self.account);
 
-        let remote_docs = self.api.list_documents(&self.account).await?;
+        const META_LAST_SYNC: &str = "last_delta_synced_at";
+
+        let since: Option<chrono::DateTime<Utc>> = self
+            .state
+            .get_meta(META_LAST_SYNC)
+            .ok()
+            .flatten()
+            .and_then(|s| chrono::DateTime::parse_from_rfc3339(&s).ok())
+            .map(|dt| dt.with_timezone(&Utc));
+
         let mut downloaded = 0usize;
 
-        for summary in &remote_docs {
-            let local_record = self.state.lookup_by_server_id(&summary.id)?;
-
-            let should_download = match &local_record {
-                None => true,
-                Some(record) => {
-                    // Download if remote hash differs from our last-synced hash.
-                    summary.sha256.as_deref() != record.sha256.as_deref()
-                        && summary.updated_at
-                            > record.synced_at.unwrap_or_else(|| {
-                                chrono::TimeZone::timestamp_opt(&Utc, 0, 0).unwrap()
-                            })
+        if let Some(since_ts) = since {
+            let delta = self.api.fetch_delta(&self.account, Some(since_ts)).await?;
+            for entry in &delta.documents {
+                self.apply_delta_entry(entry).await?;
+                if !entry.deleted {
+                    downloaded += 1;
                 }
-            };
-
-            if should_download {
-                let doc = self.api.get_document(&self.account, &summary.id).await?;
-                let local_path = self.resolve_local_path(&doc.title);
-                self.write_document_atomic(&local_path, &doc.content, &summary.id)
-                    .await?;
-                downloaded += 1;
             }
+            self.state
+                .set_meta(META_LAST_SYNC, &delta.synced_at.to_rfc3339())?;
+        } else {
+            let remote_docs = self.api.list_documents(&self.account).await?;
+            for summary in &remote_docs {
+                let local_record = self.state.lookup_by_server_id(&summary.id)?;
+
+                let should_download = match &local_record {
+                    None => true,
+                    Some(record) => {
+                        summary.sha256.as_deref() != record.sha256.as_deref()
+                            && summary.updated_at
+                                > record.synced_at.unwrap_or_else(|| {
+                                    chrono::TimeZone::timestamp_opt(&Utc, 0, 0).unwrap()
+                                })
+                    }
+                };
+
+                if should_download {
+                    let doc = self.api.get_document(&self.account, &summary.id).await?;
+                    let local_path = self.resolve_local_path(&doc.title);
+                    self.write_document_atomic(&local_path, &doc.content, &summary.id)
+                        .await?;
+                    downloaded += 1;
+                }
+            }
+
+            let delta = self.api.fetch_delta(&self.account, None).await?;
+            self.state
+                .set_meta(META_LAST_SYNC, &delta.synced_at.to_rfc3339())?;
         }
 
         if downloaded > 0 && self.config.notifications.show_success {
@@ -266,6 +291,29 @@ impl SyncEngine {
         }
 
         self.set_status(SyncStatus::Idle).await;
+        Ok(())
+    }
+
+    async fn apply_delta_entry(&self, entry: &DocumentDelta) -> Result<(), SyncError> {
+        if entry.deleted {
+            if let Ok(Some(record)) = self.state.lookup_by_server_id(&entry.id) {
+                if record.local_path.exists() {
+                    std::fs::remove_file(&record.local_path).map_err(|e| SyncError::Io {
+                        path: record.local_path.clone(),
+                        reason: e.to_string(),
+                    })?;
+                }
+                self.state.delete(&record.local_path)?;
+                info!("removed tombstoned document {}", entry.id);
+            }
+            return Ok(());
+        }
+
+        if let Some(content) = &entry.content {
+            let local_path = self.resolve_local_path(&entry.title);
+            self.write_document_atomic(&local_path, content, &entry.id)
+                .await?;
+        }
         Ok(())
     }
 
@@ -581,6 +629,118 @@ mod tests {
 
         let record = state.lookup(&md_file).unwrap();
         assert_eq!(record.pending_op, PendingOp::Upload);
+    }
+
+    #[tokio::test]
+    async fn sync_applies_delta_tombstones() {
+        let dir = TempDir::new().unwrap();
+        let watch_dir = dir.path().to_path_buf();
+
+        let api = Arc::new(MockApiClient::new());
+        let state = make_state(&dir);
+        let (_, rx) = mpsc::channel(8);
+        let engine = make_engine(make_config(&watch_dir), api.clone(), state.clone(), rx);
+
+        let local_path = watch_dir.join("to-delete.md");
+        std::fs::write(&local_path, "# Going away").unwrap();
+        state
+            .upsert(&local_path, Some("srv-del"), Some("hash-del"))
+            .unwrap();
+
+        let delta = api_client::DeltaResponse {
+            synced_at: Utc::now(),
+            documents: vec![api_client::DocumentDelta {
+                id: "srv-del".to_string(),
+                title: "to-delete".to_string(),
+                content: None,
+                folder_id: None,
+                updated_at: Utc::now(),
+                deleted: true,
+            }],
+        };
+
+        engine
+            .apply_delta_entry(&delta.documents[0])
+            .await
+            .unwrap();
+
+        assert!(!local_path.exists(), "tombstoned file should be removed");
+        assert!(
+            matches!(
+                state.lookup(&local_path),
+                Err(state_store::StateStoreError::NotFound { .. })
+            ),
+            "state row should be deleted"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_uses_full_list_on_first_sync() {
+        let dir = TempDir::new().unwrap();
+        let watch_dir = dir.path().to_path_buf();
+
+        let api = Arc::new(MockApiClient::new());
+        api.create_document(
+            "test@example.com",
+            api_client::CreateDocumentRequest {
+                title: "first-sync-doc".to_string(),
+                content: "# First".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let state = make_state(&dir);
+        let (_, rx) = mpsc::channel(8);
+        let engine = make_engine(make_config(&watch_dir), api.clone(), state.clone(), rx);
+
+        assert!(state.get_meta("last_delta_synced_at").unwrap().is_none());
+
+        engine.poll_remote().await.unwrap();
+
+        let expected = watch_dir.join("first-sync-doc.md");
+        assert!(expected.exists(), "document should be written on first sync");
+        assert!(
+            state.get_meta("last_delta_synced_at").unwrap().is_some(),
+            "synced_at should be persisted after first sync"
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_persists_synced_at_from_delta() {
+        let dir = TempDir::new().unwrap();
+        let watch_dir = dir.path().to_path_buf();
+
+        let api = Arc::new(MockApiClient::new());
+        let state = make_state(&dir);
+
+        let fixed_time: chrono::DateTime<Utc> =
+            "2026-05-01T00:00:00Z".parse().unwrap();
+        state
+            .set_meta("last_delta_synced_at", &fixed_time.to_rfc3339())
+            .unwrap();
+
+        let new_sync_time: chrono::DateTime<Utc> =
+            "2026-06-15T10:30:00Z".parse().unwrap();
+        api.set_delta_response(api_client::DeltaResponse {
+            synced_at: new_sync_time,
+            documents: vec![],
+        });
+
+        let (_, rx) = mpsc::channel(8);
+        let engine = make_engine(make_config(&watch_dir), api.clone(), state.clone(), rx);
+
+        engine.poll_remote().await.unwrap();
+
+        let stored = state
+            .get_meta("last_delta_synced_at")
+            .unwrap()
+            .expect("synced_at must be stored");
+        let stored_dt: chrono::DateTime<Utc> =
+            chrono::DateTime::parse_from_rfc3339(&stored)
+                .unwrap()
+                .with_timezone(&Utc);
+        assert_eq!(stored_dt, new_sync_time);
     }
 
     /// Verify that sending on `sync_now_tx` causes `SyncEngine::run()` to

@@ -10,7 +10,7 @@ struct DocumentMapper: Sendable {
     @discardableResult
     func write(document: DocumentDTO) throws -> URL {
         let fileURL = try resolveURL(for: document)
-        try document.body.write(to: fileURL, atomically: true, encoding: .utf8)
+        try document.content.write(to: fileURL, atomically: true, encoding: .utf8)
         try setDocumentID(document.id, on: fileURL)
         return fileURL
     }
@@ -56,7 +56,7 @@ struct DocumentMapper: Sendable {
     }
 
     /// Removes the local file backing a document ID, if one exists.
-    func deleteLocalFile(id: String) throws {
+    func removeLocalDocument(id: String) throws {
         guard let url = try findExisting(id: id) else { return }
         do {
             try FileManager.default.removeItem(at: url)

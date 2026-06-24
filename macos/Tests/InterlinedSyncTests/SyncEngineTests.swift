@@ -50,7 +50,7 @@ final class SyncEngineTests: XCTestCase {
     // MARK: - Pull
 
     func testPull_writesNewRemoteDocumentsToDisk() async throws {
-        server.seed(DocumentDTO(id: "r1", title: "Remote One", body: "alpha", updatedAt: date(1)))
+        server.seed(DocumentDTO(id: "r1", title: "Remote One", content: "alpha", folderId: nil, updatedAt: date(1)))
         let engine = makeEngine()
 
         try await engine.runCycle()
@@ -61,7 +61,7 @@ final class SyncEngineTests: XCTestCase {
     }
 
     func testPull_setsLastSyncedAt() async throws {
-        server.seed(DocumentDTO(id: "r1", title: "X", body: "y", updatedAt: date(1)))
+        server.seed(DocumentDTO(id: "r1", title: "X", content: "y", folderId: nil, updatedAt: date(1)))
         let engine = makeEngine()
 
         await engine.syncNow()
@@ -73,7 +73,7 @@ final class SyncEngineTests: XCTestCase {
     }
 
     func testPull_remoteDeletion_removesLocalFile() async throws {
-        server.seed(DocumentDTO(id: "r1", title: "Doomed", body: "z", updatedAt: date(1)))
+        server.seed(DocumentDTO(id: "r1", title: "Doomed", content: "z", folderId: nil, updatedAt: date(1)))
         let engine = makeEngine()
         try await engine.runCycle()
         XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("Doomed.md").path))
@@ -95,12 +95,12 @@ final class SyncEngineTests: XCTestCase {
 
         let created = server.documents.values.first { $0.title == "Brand New" }
         XCTAssertNotNil(created, "Expected the new local file to be POSTed")
-        XCTAssertEqual(created?.body, "fresh content")
+        XCTAssertEqual(created?.content, "fresh content")
         XCTAssertEqual(server.createCount, 1)
     }
 
     func testPush_localEdit_putsToServer() async throws {
-        server.seed(DocumentDTO(id: "r1", title: "Editable", body: "old", updatedAt: date(1)))
+        server.seed(DocumentDTO(id: "r1", title: "Editable", content: "old", folderId: nil, updatedAt: date(1)))
         let engine = makeEngine()
         try await engine.runCycle()
 
@@ -109,12 +109,12 @@ final class SyncEngineTests: XCTestCase {
 
         try await engine.runCycle()
 
-        XCTAssertEqual(server.documents["r1"]?.body, "edited locally")
+        XCTAssertEqual(server.documents["r1"]?.content, "edited locally")
         XCTAssertGreaterThanOrEqual(server.updateCount, 1)
     }
 
     func testPush_localDeletion_deletesOnServer() async throws {
-        server.seed(DocumentDTO(id: "r1", title: "Removable", body: "x", updatedAt: date(1)))
+        server.seed(DocumentDTO(id: "r1", title: "Removable", content: "x", folderId: nil, updatedAt: date(1)))
         let engine = makeEngine()
         try await engine.runCycle()
 
@@ -128,7 +128,7 @@ final class SyncEngineTests: XCTestCase {
     // MARK: - Conflict
 
     func testConflict_writesConflictCopyAndAcceptsRemote() async throws {
-        server.seed(DocumentDTO(id: "r1", title: "Shared", body: "original", updatedAt: date(1)))
+        server.seed(DocumentDTO(id: "r1", title: "Shared", content: "original", folderId: nil, updatedAt: date(1)))
         let engine = makeEngine()
         try await engine.runCycle()
 
@@ -149,6 +149,62 @@ final class SyncEngineTests: XCTestCase {
         XCTAssertEqual(copyBody, "local edit", "Conflict copy should preserve the local edit")
     }
 
+    // MARK: - Delta
+
+    func testSync_usesFullListOnFirstSync() async throws {
+        server.seed(DocumentDTO(id: "r1", title: "First", content: "x", folderId: nil, updatedAt: date(1)))
+        let engine = makeEngine()
+
+        try await engine.runCycle()
+
+        XCTAssertEqual(server.deltaFetchCount, 0, "First sync should use the full list, not the delta endpoint")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("First.md").path))
+    }
+
+    func testSync_persistsLastSyncedAtFromDelta() async throws {
+        server.seed(DocumentDTO(id: "r1", title: "Seed", content: "x", folderId: nil, updatedAt: date(1)))
+        let engine = makeEngine()
+        await engine.syncNow()
+
+        let deltaSyncedAt = Date(timeIntervalSince1970: 5_000_000)
+        server.stageDelta(DeltaResponse(syncedAt: deltaSyncedAt, documents: []))
+
+        await engine.syncNow()
+
+        XCTAssertEqual(server.deltaFetchCount, 1, "Second sync should hit the delta endpoint")
+        let synced = await state.lastSyncedAt
+        XCTAssertEqual(synced, deltaSyncedAt)
+    }
+
+    func testSync_appliesDeltaTombstones() async throws {
+        server.seed(DocumentDTO(id: "r1", title: "Keep", content: "x", folderId: nil, updatedAt: date(1)))
+        server.seed(DocumentDTO(id: "r2", title: "Drop", content: "y", folderId: nil, updatedAt: date(1)))
+        let engine = makeEngine()
+        await engine.syncNow()
+
+        let keepURL = tempDir.appendingPathComponent("Keep.md")
+        let dropURL = tempDir.appendingPathComponent("Drop.md")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: keepURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dropURL.path))
+
+        server.stageDelta(
+            DeltaResponse(
+                syncedAt: Date(timeIntervalSince1970: 6_000_000),
+                documents: [
+                    DocumentDelta(
+                        id: "r2", title: "Drop", content: nil,
+                        folderId: nil, updatedAt: date(2), deleted: true
+                    )
+                ]
+            )
+        )
+
+        await engine.syncNow()
+
+        XCTAssertTrue(FileManager.default.fileExists(atPath: keepURL.path), "Untouched doc should remain")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dropURL.path), "Tombstoned doc should be deleted locally")
+    }
+
     // MARK: - Error surfacing
 
     func testFetchFailure_setsErrorState() async throws {
@@ -166,7 +222,7 @@ final class SyncEngineTests: XCTestCase {
     // MARK: - Notifications
 
     func testSyncNow_notifiesCompletionWhenDocumentsChanged() async throws {
-        server.seed(DocumentDTO(id: "r1", title: "New", body: "hello", updatedAt: date(1)))
+        server.seed(DocumentDTO(id: "r1", title: "New", content: "hello", folderId: nil, updatedAt: date(1)))
         let center = MockNotificationCenter()
         let notifications = NotificationManager(center: center, isEnabled: { true })
         let engine = makeEngine(notifications: notifications)

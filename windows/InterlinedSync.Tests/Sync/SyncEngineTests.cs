@@ -281,7 +281,7 @@ public sealed class SyncEngineTests : IAsyncLifetime
             new DateTimeOffset(2026, 6, 22, 0, 0, 0, TimeSpan.Zero),
             sha));
 
-        _http.When(HttpMethod.Put, "*/api/documents/doc-1")
+        _http.When(HttpMethod.Patch, "*/api/documents/doc-1")
              .Respond(HttpStatusCode.InternalServerError); // would fail if invoked
 
         var result = await _engine.PushOnceAsync(new LocalChange(LocalChangeKind.Modified, path), default);
@@ -358,6 +358,83 @@ public sealed class SyncEngineTests : IAsyncLifetime
         _notifier.Current.Should().Be(SyncState.Error);
     }
 
+    [Fact]
+    public async Task Sync_usesFullListOnFirstSync()
+    {
+        var doc = new Document("doc-1", "Initial", null, "first body",
+            new DateTimeOffset(2026, 6, 22, 10, 0, 0, TimeSpan.Zero));
+        StubDocuments(doc);
+        var deltaCalls = StubDeltaCounter();
+
+        await _engine.RunOnceAsync(default);
+
+        deltaCalls().Should().Be(0);
+        (await _repository.GetByIdAsync("doc-1")).Should().NotBeNull();
+        (await _repository.GetLastSyncedAtAsync()).Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Sync_persistsLastSyncedAtFromDelta()
+    {
+        await _repository.SetLastSyncedAtAsync(new DateTimeOffset(2026, 6, 21, 0, 0, 0, TimeSpan.Zero));
+
+        var syncedAt = new DateTimeOffset(2026, 6, 22, 12, 0, 0, TimeSpan.Zero);
+        StubDelta(syncedAt,
+            new DocumentDelta("doc-1", "Fresh", "body", null,
+                new DateTimeOffset(2026, 6, 22, 11, 0, 0, TimeSpan.Zero), false));
+
+        var result = await _engine.RunOnceAsync(default);
+
+        result.Downloaded.Should().Be(1);
+        var stored = await _repository.GetLastSyncedAtAsync();
+        stored.Should().NotBeNull();
+        stored!.Value.Should().BeCloseTo(syncedAt, TimeSpan.FromMilliseconds(1));
+    }
+
+    [Fact]
+    public async Task Sync_appliesDeltaTombstones()
+    {
+        var path = Path.Combine(SyncFolder, "Doomed.md");
+        _fileSystem.AddFile(path, new MockFileData("doomed body"));
+        await _repository.UpsertDocumentAsync(new SyncStateRecord(
+            "doc-dead", path,
+            new DateTimeOffset(2026, 6, 21, 0, 0, 0, TimeSpan.Zero),
+            new DateTimeOffset(2026, 6, 21, 0, 0, 0, TimeSpan.Zero),
+            "sha"));
+        await _repository.SetLastSyncedAtAsync(new DateTimeOffset(2026, 6, 21, 0, 0, 0, TimeSpan.Zero));
+
+        StubDelta(new DateTimeOffset(2026, 6, 22, 12, 0, 0, TimeSpan.Zero),
+            new DocumentDelta("doc-dead", "Doomed", null, null,
+                new DateTimeOffset(2026, 6, 22, 11, 0, 0, TimeSpan.Zero), true));
+
+        var result = await _engine.RunOnceAsync(default);
+
+        result.Deleted.Should().Be(1);
+        _fileSystem.File.Exists(path).Should().BeFalse();
+        (await _repository.GetByIdAsync("doc-dead")).Should().BeNull();
+    }
+
+    private void StubDelta(DateTimeOffset syncedAt, params DocumentDelta[] documents)
+    {
+        var payload = new DeltaResponse(syncedAt, Array.Empty<Folder>(), documents);
+        var json = System.Text.Json.JsonSerializer.Serialize(
+            payload,
+            new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
+            });
+        _http.When(HttpMethod.Get, "*/api/documents/sync*")
+             .Respond("application/json", json);
+    }
+
+    private Func<int> StubDeltaCounter()
+    {
+        var matched = _http.When(HttpMethod.Get, "*/api/documents/sync*")
+                           .Respond("application/json",
+                               "{\"syncedAt\":\"2026-06-22T12:00:00+00:00\",\"folders\":[],\"documents\":[]}");
+        return () => _http.GetMatchCount(matched);
+    }
+
     private void StubCreate(Document doc)
     {
         var json = System.Text.Json.JsonSerializer.Serialize(
@@ -378,7 +455,7 @@ public sealed class SyncEngineTests : IAsyncLifetime
             {
                 PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase,
             });
-        _http.When(HttpMethod.Put, $"*/api/documents/{id}")
+        _http.When(HttpMethod.Patch, $"*/api/documents/{id}")
              .Respond("application/json", json);
     }
 

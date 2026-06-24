@@ -94,7 +94,11 @@ impl StateStore {
                      pending_op  TEXT    NOT NULL DEFAULT 'none'
                  );
                  CREATE INDEX IF NOT EXISTS idx_documents_server_id
-                     ON documents(server_id);",
+                     ON documents(server_id);
+                 CREATE TABLE IF NOT EXISTS meta (
+                     key   TEXT PRIMARY KEY,
+                     value TEXT NOT NULL
+                 );",
             )
             .context("database migration failed")?;
         debug!("state DB schema ready");
@@ -209,6 +213,28 @@ impl StateStore {
         self.conn.execute(
             "DELETE FROM documents WHERE local_path = ?1",
             params![path_str.as_ref()],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_meta(&self, key: &str) -> Result<Option<String>, StateStoreError> {
+        let result = self.conn.query_row(
+            "SELECT value FROM meta WHERE key = ?1",
+            params![key],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(StateStoreError::Database(e)),
+        }
+    }
+
+    pub fn set_meta(&self, key: &str, value: &str) -> Result<(), StateStoreError> {
+        self.conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
         )?;
         Ok(())
     }

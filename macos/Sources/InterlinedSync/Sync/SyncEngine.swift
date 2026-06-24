@@ -90,7 +90,7 @@ actor SyncEngine {
         await state.beginSync()
         do {
             let outcome = try await runCycle()
-            await state.finishSync(at: Date())
+            await state.finishSync(at: outcome.syncedAt ?? Date())
             await reportSuccess(outcome)
         } catch let error as SyncError {
             let message = Self.describe(error)
@@ -105,6 +105,13 @@ actor SyncEngine {
 
     @discardableResult
     func runCycle() async throws -> SyncOutcome {
+        if let since = await state.lastSyncedAt {
+            return try await runDeltaCycle(since: since)
+        }
+        return try await runFullCycle()
+    }
+
+    private func runFullCycle() async throws -> SyncOutcome {
         let remote = try await client.fetchDocuments()
         let (tracked, untracked) = try loadLocal()
 
@@ -127,6 +134,92 @@ actor SyncEngine {
         return SyncOutcome(
             documentsChanged: documentsChanged,
             conflictCopiesCreated: changeSet.conflicts.count
+        )
+    }
+
+    private func runDeltaCycle(since: Date) async throws -> SyncOutcome {
+        let delta = try await client.fetchDelta(since: since)
+        let tombstones = delta.documents.filter { $0.deleted }
+        let updates = delta.documents.filter { !$0.deleted }.map(Self.makeDocument)
+        let updatedIDs = Set(updates.map { $0.id })
+
+        for tombstone in tombstones {
+            try mapper.removeLocalDocument(id: tombstone.id)
+            ledger[tombstone.id] = nil
+        }
+
+        let (tracked, untracked) = try loadLocal()
+        let pull = ChangeSet.compute(
+            trackedLocal: tracked.filter { updatedIDs.contains($0.id) },
+            untrackedLocal: [],
+            remote: updates,
+            ledger: ledger.filter { updatedIDs.contains($0.key) }
+        )
+        try await applyConflicts(pull.conflicts)
+        try applyRemoteChanges(pull.remoteChanges)
+        try await applyLocalChanges(pull.localChanges)
+
+        let pushed = try await pushLocalChanges(tracked: tracked, untracked: untracked, skipping: updatedIDs)
+
+        rebuildLedgerForDelta(updates: updates)
+
+        let documentsChanged = tombstones.count
+            + pull.localChanges.count
+            + pull.remoteChanges.count
+            + pull.conflicts.count
+            + pushed
+        return SyncOutcome(
+            documentsChanged: documentsChanged,
+            conflictCopiesCreated: pull.conflicts.count,
+            syncedAt: delta.syncedAt
+        )
+    }
+
+    private func pushLocalChanges(
+        tracked: [LocalDocument],
+        untracked: [(url: URL, title: String, body: String)],
+        skipping handled: Set<String>
+    ) async throws -> Int {
+        var changes: [ChangeSet.LocalChange] = []
+        for file in untracked {
+            changes.append(.created(url: file.url, title: file.title, body: file.body))
+        }
+        for local in tracked where !handled.contains(local.id) {
+            guard let record = ledger[local.id] else { continue }
+            if local.modifiedAt > record.localModifiedAt {
+                changes.append(.updated(local))
+            }
+        }
+        let trackedIDs = Set(tracked.map { $0.id })
+        for id in ledger.keys where !handled.contains(id) && !trackedIDs.contains(id) {
+            changes.append(.deleted(id: id))
+        }
+        try await applyLocalChanges(changes)
+        return changes.count
+    }
+
+    private func rebuildLedgerForDelta(updates: [DocumentDTO]) {
+        let remoteByID = Dictionary(updates.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let tracked = (try? mapper.localDocuments()) ?? []
+        let trackedIDs = Set(tracked.map { $0.id })
+
+        for file in tracked {
+            let modifiedAt = mapper.modificationDate(of: file.url)
+            let remoteUpdatedAt = remoteByID[file.id]?.updatedAt ?? ledger[file.id]?.remoteUpdatedAt ?? modifiedAt
+            ledger[file.id] = SyncRecord(remoteUpdatedAt: remoteUpdatedAt, localModifiedAt: modifiedAt)
+        }
+        for id in ledger.keys where !trackedIDs.contains(id) {
+            ledger[id] = nil
+        }
+    }
+
+    private static func makeDocument(from delta: DocumentDelta) -> DocumentDTO {
+        DocumentDTO(
+            id: delta.id,
+            title: delta.title,
+            content: delta.content ?? "",
+            folderId: delta.folderId,
+            updatedAt: delta.updatedAt
         )
     }
 
@@ -184,7 +277,7 @@ actor SyncEngine {
             case let .created(document), let .updated(document):
                 try mapper.write(document: document)
             case let .deleted(id):
-                try mapper.deleteLocalFile(id: id)
+                try mapper.removeLocalDocument(id: id)
             }
         }
     }
@@ -194,7 +287,7 @@ actor SyncEngine {
             switch change {
             case let .created(url, title, body):
                 let created = try await client.createDocument(
-                    DocumentUpdateRequest(title: title, body: body)
+                    DocumentUpdateRequest(title: title, content: body)
                 )
                 // Remove the untracked source first so re-materializing it through the mapper
                 // (which stamps the new document ID as an xattr) doesn't leave a "-2" duplicate.
@@ -205,7 +298,7 @@ actor SyncEngine {
             case let .updated(local):
                 _ = try await client.updateDocument(
                     id: local.id,
-                    update: DocumentUpdateRequest(title: local.title, body: local.body)
+                    update: DocumentUpdateRequest(title: local.title, content: local.body)
                 )
             case let .deleted(id):
                 try await client.deleteDocument(id: id)

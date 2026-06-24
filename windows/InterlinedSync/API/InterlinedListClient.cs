@@ -22,6 +22,9 @@ public sealed class InterlinedListClient : IInterlinedListClient
     /// <summary>Relative URL of the documents collection endpoint.</summary>
     public const string DocumentsEndpoint = "/api/documents";
 
+    /// <summary>Relative URL of the incremental sync endpoint.</summary>
+    public const string SyncEndpoint = "/api/documents/sync";
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
@@ -170,7 +173,7 @@ public sealed class InterlinedListClient : IInterlinedListClient
         _logger.LogDebug("Updating document {DocumentId}.", documentId);
 
         var body = new DocumentMutation(title, content);
-        var response = await SendJsonAsync(HttpMethod.Put, path, body, cancellationToken).ConfigureAwait(false);
+        var response = await SendJsonAsync(HttpMethod.Patch, path, body, cancellationToken).ConfigureAwait(false);
 
         return await ReadDocumentAsync(response, "update", cancellationToken).ConfigureAwait(false);
     }
@@ -212,6 +215,46 @@ public sealed class InterlinedListClient : IInterlinedListClient
                 _logger.LogWarning("Delete {DocumentId} failed with status {Status}.", documentId, response.StatusCode);
                 throw new ApiException($"Delete {documentId} failed with status {(int)response.StatusCode}.", response.StatusCode);
             }
+        }
+        finally
+        {
+            response.Dispose();
+        }
+    }
+
+    public async Task<DeltaResponse> FetchDeltaAsync(DateTimeOffset? lastSyncAt, CancellationToken cancellationToken = default)
+    {
+        var path = SyncEndpoint;
+        if (lastSyncAt is { } since)
+        {
+            var encoded = Uri.EscapeDataString(since.ToString("O", System.Globalization.CultureInfo.InvariantCulture));
+            path = $"{SyncEndpoint}?lastSyncAt={encoded}";
+        }
+
+        _logger.LogDebug("Fetching delta since {Since}.", lastSyncAt);
+
+        var response = await SendAsync(HttpMethod.Get, path, cancellationToken).ConfigureAwait(false);
+        try
+        {
+            DeltaResponse? payload;
+            try
+            {
+                payload = await response.Content
+                    .ReadFromJsonAsync<DeltaResponse>(JsonOptions, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (JsonException ex)
+            {
+                _logger.LogError(ex, "Delta response was not valid JSON.");
+                throw new ApiException("Delta response was not valid JSON.", response.StatusCode, ex);
+            }
+
+            if (payload is null)
+            {
+                throw new ApiException("Delta response was empty.", response.StatusCode);
+            }
+
+            return payload;
         }
         finally
         {

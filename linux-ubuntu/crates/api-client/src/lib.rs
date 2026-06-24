@@ -46,6 +46,8 @@ pub struct DocumentSummary {
     pub title: String,
     pub updated_at: DateTime<Utc>,
     pub sha256: Option<String>,
+    #[serde(rename = "folderId")]
+    pub folder_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -55,6 +57,28 @@ pub struct Document {
     pub content: String,
     pub updated_at: DateTime<Utc>,
     pub sha256: Option<String>,
+    #[serde(rename = "folderId")]
+    pub folder_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeltaResponse {
+    #[serde(rename = "syncedAt")]
+    pub synced_at: DateTime<Utc>,
+    pub documents: Vec<DocumentDelta>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentDelta {
+    pub id: String,
+    pub title: String,
+    pub content: Option<String>,
+    #[serde(rename = "folderId")]
+    pub folder_id: Option<String>,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub deleted: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +115,11 @@ pub trait ApiClientTrait: Send + Sync {
         req: UpdateDocumentRequest,
     ) -> Result<Document, ApiError>;
     async fn delete_document(&self, account: &str, id: &str) -> Result<(), ApiError>;
+    async fn fetch_delta(
+        &self,
+        account: &str,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<DeltaResponse, ApiError>;
 }
 
 #[derive(Clone)]
@@ -261,7 +290,7 @@ impl ApiClientTrait for ApiClient {
         self.execute_with_retry(|| async {
             let resp = self
                 .http
-                .put(&url)
+                .patch(&url)
                 .bearer_auth(&token)
                 .json(&req)
                 .send()
@@ -294,6 +323,24 @@ impl ApiClientTrait for ApiClient {
                     Err(ApiError::Server { status, body })
                 }
             }
+        })
+        .await
+    }
+
+    async fn fetch_delta(
+        &self,
+        account: &str,
+        since: Option<DateTime<Utc>>,
+    ) -> Result<DeltaResponse, ApiError> {
+        let token = self.token_for(account).await?;
+        let base_url = self.url("/documents/sync");
+        let url = match since {
+            Some(ts) => format!("{}?lastSyncAt={}", base_url, ts.to_rfc3339()),
+            None => base_url,
+        };
+        self.execute_with_retry(|| async {
+            let resp = self.http.get(&url).bearer_auth(&token).send().await?;
+            parse_response(resp).await
         })
         .await
     }
@@ -469,12 +516,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_document_sends_put() {
+    async fn update_document_sends_patch() {
         let mut ctx = make_context().await;
-        let resp_body = r##"{"id":"doc-1","title":"Test","content":"# Updated","updated_at":"2026-01-01T00:00:00Z","sha256":null}"##;
+        let resp_body = r##"{"id":"doc-1","title":"Test","content":"# Updated","updated_at":"2026-01-01T00:00:00Z","sha256":null,"folderId":null}"##;
         let _m = ctx
             .server
-            .mock("PUT", "/documents/doc-1")
+            .mock("PATCH", "/documents/doc-1")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(resp_body)
@@ -575,5 +622,90 @@ mod tests {
             matches!(err, ApiError::RetriesExhausted { .. }),
             "expected RetriesExhausted, got {err:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn fetch_delta_parses_response() {
+        let mut ctx = make_context().await;
+        let body = r##"{
+            "syncedAt": "2026-06-01T12:00:00Z",
+            "documents": [
+                {
+                    "id": "d1",
+                    "title": "Doc One",
+                    "content": "# Hello",
+                    "folderId": "folder-a",
+                    "updatedAt": "2026-06-01T11:00:00Z",
+                    "deleted": false
+                }
+            ]
+        }"##;
+        let _m = ctx
+            .server
+            .mock("GET", "/documents/sync")
+            .match_header("authorization", "Bearer test-token")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let delta = ctx.client.fetch_delta(&ctx.account, None).await.unwrap();
+        assert_eq!(delta.documents.len(), 1);
+        assert_eq!(delta.documents[0].id, "d1");
+        assert_eq!(delta.documents[0].folder_id.as_deref(), Some("folder-a"));
+        assert!(!delta.documents[0].deleted);
+    }
+
+    #[tokio::test]
+    async fn fetch_delta_no_since_omits_query() {
+        let mut ctx = make_context().await;
+        let body = r#"{"syncedAt":"2026-06-01T12:00:00Z","documents":[]}"#;
+        let _m = ctx
+            .server
+            .mock("GET", "/documents/sync")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let delta = ctx.client.fetch_delta(&ctx.account, None).await.unwrap();
+        assert!(delta.documents.is_empty());
+        assert_eq!(
+            delta.synced_at.to_rfc3339(),
+            "2026-06-01T12:00:00+00:00"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_delta_with_tombstones() {
+        let mut ctx = make_context().await;
+        let body = r##"{
+            "syncedAt": "2026-06-02T00:00:00Z",
+            "documents": [
+                {
+                    "id": "gone-1",
+                    "title": "Deleted Doc",
+                    "content": null,
+                    "folderId": null,
+                    "updatedAt": "2026-06-01T23:59:00Z",
+                    "deleted": true
+                }
+            ]
+        }"##;
+        let _m = ctx
+            .server
+            .mock("GET", "/documents/sync")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create_async()
+            .await;
+
+        let delta = ctx.client.fetch_delta(&ctx.account, None).await.unwrap();
+        assert_eq!(delta.documents.len(), 1);
+        assert!(delta.documents[0].deleted);
+        assert!(delta.documents[0].content.is_none());
     }
 }

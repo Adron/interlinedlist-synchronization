@@ -19,7 +19,7 @@ struct ChangeSet: Sendable, Equatable {
     enum LocalChange: Sendable, Equatable {
         /// A new `.md` file with no document ID yet — POST to the server.
         case created(url: URL, title: String, body: String)
-        /// A tracked file whose contents changed locally — PUT to the server.
+        /// A tracked file whose contents changed locally — PATCH to the server.
         case updated(LocalDocument)
         /// A tracked file removed locally — DELETE on the server.
         case deleted(id: String)

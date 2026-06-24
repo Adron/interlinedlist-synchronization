@@ -2,6 +2,7 @@ import Foundation
 
 protocol DocumentFetching: Sendable {
     func fetchDocuments() async throws -> [DocumentDTO]
+    func fetchDelta(since: Date?) async throws -> DeltaResponse
 }
 
 protocol DocumentMutating: Sendable {
@@ -16,6 +17,7 @@ actor InterlinedListClient: DocumentFetching, DocumentMutating {
     private let tokenStorage: TokenStorage
     private let decoder = JSONDecoder.interlinedList()
     private static let keychainAccount = "session-token"
+    private static let isoFormatter = ISO8601DateFormatter()
 
     init(baseURL: URL, session: URLSession, tokenStorage: TokenStorage) {
         self.baseURL = baseURL
@@ -29,8 +31,17 @@ actor InterlinedListClient: DocumentFetching, DocumentMutating {
         return response.documents
     }
 
+    func fetchDelta(since: Date?) async throws -> DeltaResponse {
+        let request = try authenticatedRequest(
+            path: "/api/documents/sync",
+            method: "GET",
+            query: since.map { [URLQueryItem(name: "lastSyncAt", value: Self.isoFormatter.string(from: $0))] }
+        )
+        return try await perform(request)
+    }
+
     func updateDocument(id: String, update: DocumentUpdateRequest) async throws -> DocumentDTO {
-        var request = try authenticatedRequest(path: "/api/documents/\(id)", method: "PUT")
+        var request = try authenticatedRequest(path: "/api/documents/\(id)", method: "PATCH")
         try attachJSON(update, to: &request)
         return try await perform(request)
     }
@@ -48,18 +59,34 @@ actor InterlinedListClient: DocumentFetching, DocumentMutating {
 
     // MARK: - Private
 
-    private func authenticatedRequest(path: String, method: String) throws -> URLRequest {
+    private func authenticatedRequest(
+        path: String,
+        method: String,
+        query: [URLQueryItem]? = nil
+    ) throws -> URLRequest {
         let token: String
         do {
             token = try tokenStorage.load(for: Self.keychainAccount)
         } catch {
             throw SyncError.notAuthenticated
         }
-        var request = URLRequest(url: baseURL.appendingPathComponent(path))
+        let url = try resolveURL(path: path, query: query)
+        var request = URLRequest(url: url)
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         return request
+    }
+
+    private func resolveURL(path: String, query: [URLQueryItem]?) throws -> URL {
+        let base = baseURL.appendingPathComponent(path)
+        guard let query, !query.isEmpty else { return base }
+        guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+            throw SyncError.mapping
+        }
+        components.queryItems = query
+        guard let url = components.url else { throw SyncError.mapping }
+        return url
     }
 
     private func attachJSON<T: Encodable>(_ body: T, to request: inout URLRequest) throws {
