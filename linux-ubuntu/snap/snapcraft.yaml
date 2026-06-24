@@ -43,31 +43,20 @@ parts:
   interlinedlist-sync:
     plugin: rust
     source: .
-    # stable channel matches the toolchain pinned in CI
     rust-channel: stable
+    # Daemon-only build: tray-app + its GTK/libadwaita deps are excluded.
     build-packages:
       - pkg-config
-      - libgtk-4-dev
-      - libadwaita-1-dev
-      - libayatana-appindicator3-dev
       - libsecret-1-dev
       - libdbus-1-dev
       - libsqlite3-dev
     stage-packages:
-      - libgtk-4-1
-      - libadwaita-1-0
-      - libayatana-appindicator3-1
       - libsecret-1-0
       - libdbus-1-3
       - libsqlite3-0
     override-build: |
-      # Build only the binary crate; tray-app requires a live display so
-      # exclude it from the snap build the same way CI excludes it.
-      craftctl default
-      # craftctl default runs `cargo build --release` across the workspace.
-      # The binary lands at parts/interlinedlist-sync/build/target/release/.
-    # Forward the binary to snap's bin/ prefix.
-    organize:
-      target/release/interlinedlist-sync: bin/interlinedlist-sync
+      cd "${CRAFT_PART_SRC}"
+      cargo build --release --package interlinedlist-sync
+      install -Dm755 target/release/interlinedlist-sync "${CRAFT_PART_INSTALL}/bin/interlinedlist-sync"
     prime:
       - bin/interlinedlist-sync
