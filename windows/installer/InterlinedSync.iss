@@ -1,12 +1,18 @@
 ; ============================================================================
 ; InterlinedList Sync — Inno Setup script
 ; ----------------------------------------------------------------------------
-; Builds InterlinedListSync-Setup-<version>.exe from the framework-dependent
+; Builds InterlinedListSync-Setup-<version>.exe from the SELF-CONTAINED
 ; publish output produced by:
 ;
 ;   dotnet publish windows/InterlinedSync/InterlinedSync.csproj \
-;     --configuration Release --runtime win-x64 --self-contained false \
+;     --configuration Release --runtime win-x64 --self-contained true \
 ;     --output windows/publish
+;
+; --self-contained true ships the .NET 9 runtime inside the publish dir;
+; the installer copies that whole tree into {app} so the installed app
+; launches with no separately-installed .NET runtime. (Earlier framework-
+; dependent builds caused a silent no-op on first install for users
+; without the .NET 9 Desktop Runtime.)
 ;
 ; The release pipeline already produces that publish/ directory upstream of
 ; the installer step; locally, run the dotnet publish command above before

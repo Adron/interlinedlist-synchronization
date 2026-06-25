@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.IO;
 using System.Windows;
+using System.Windows.Threading;
 using InterlinedSync.Auth;
 using InterlinedSync.Configuration;
 using InterlinedSync.Storage;
@@ -13,6 +14,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Serilog;
 
 namespace InterlinedSync;
 
@@ -37,50 +39,255 @@ public partial class App : Application, ITrayCommandHandler
     {
         base.OnStartup(e);
         _launchArgs = e.Args ?? Array.Empty<string>();
-        _host = Program.BuildHost(_launchArgs);
-        await _host.StartAsync().ConfigureAwait(true);
 
-        _logger = _host.Services.GetRequiredService<ILogger<App>>();
-        _logger.LogInformation("InterlinedList Sync starting up.");
+        // ----- Step 1: Wire global exception handlers FIRST. -----
+        // These must be installed before any other startup work runs so a
+        // throw during BuildHost / host.StartAsync / DI resolution surfaces
+        // a visible MessageBox instead of a silent exit. The v0.2.0 installer
+        // shipped without this safety net and any failure here vanished into
+        // the void — no tray icon, no onboarding, no error.
+        RegisterGlobalExceptionHandlers();
 
-        var auth = _host.Services.GetRequiredService<IAuthProvider>();
-        var notifier = _host.Services.GetRequiredService<ISyncStateNotifier>();
-
-        var token = await auth.GetTokenAsync().ConfigureAwait(true);
-        var signedIn = !string.IsNullOrEmpty(token);
-
-        // Seed the initial state before the tray subscribes so the very first
-        // icon paint matches reality (signed-out shows the error icon, signed-in
-        // shows the idle icon).
-        notifier.SetState(signedIn ? SyncState.Idle : SyncState.SignedOut);
-
-        // The tray is brought up unconditionally — this is the user's only
-        // re-entry point if they dismiss the onboarding window without signing
-        // in. The tray menu's "Sign in…" item is enabled in this state.
-        InitializeTray();
-
-        if (!signedIn)
+        try
         {
-            _logger.LogInformation("No token in Credential Manager; presenting onboarding window.");
-            ShowOnboardingWindow();
-            // Skip the startup prompt entirely when signed-out — the user
-            // hasn't even authenticated yet; pestering them about autostart
-            // would be off-putting. We'll re-evaluate the next launch.
-            return;
-        }
+            // ----- Step 2: Build host and seed the logger. -----
+            // DI failures throw here; the outer try/catch catches them.
+            _host = Program.BuildHost(_launchArgs);
+            _logger = _host.Services.GetRequiredService<ILogger<App>>();
+            _logger.LogInformation("InterlinedList Sync starting up.");
 
-        // Workstream B: one-time "run at startup?" prompt. Non-modal, fire-
-        // and-forget — the tray and sync loop are already live so the prompt
-        // never blocks anything. Skip when the installer auto-launched us,
-        // when the user already opted out, or when the Run entry exists.
-        _ = MaybeShowStartupPromptAsync();
+            var auth = _host.Services.GetRequiredService<IAuthProvider>();
+            var notifier = _host.Services.GetRequiredService<ISyncStateNotifier>();
+
+            var token = await auth.GetTokenAsync().ConfigureAwait(true);
+            var signedIn = !string.IsNullOrEmpty(token);
+
+            // Seed the initial state before the tray subscribes so the very
+            // first icon paint matches reality (signed-out shows the error
+            // icon, signed-in shows the idle icon).
+            notifier.SetState(signedIn ? SyncState.Idle : SyncState.SignedOut);
+
+            // ----- Step 3: Bring the tray up BEFORE starting background services. -----
+            // The tray is the user's only re-entry point if anything else
+            // fails. If host startup throws later, the user still sees the
+            // tray icon and can use "Sign in…" / "Exit". The earlier
+            // OnStartup did host.StartAsync() first and InitializeTray()
+            // second; any throw in StartAsync left the user staring at
+            // nothing. Order matters here.
+            InitializeTray();
+
+            // ----- Step 4: Surface the onboarding window for signed-out users. -----
+            // Switched from ShowDialog (modal) to Show (non-modal) so it
+            // does NOT block the rest of OnStartup — specifically so we can
+            // still call host.StartAsync() below while the user is signing
+            // in. The tray's "Sign in…" menu item remains the persistent
+            // re-entry point if the user dismisses the window.
+            if (!signedIn)
+            {
+                _logger.LogInformation("No token in Credential Manager; presenting onboarding window.");
+                ShowOnboardingWindow();
+            }
+
+            // ----- Step 5: Start the host (and the SyncEngine BackgroundService). -----
+            // Wrapped in its own try/catch so a sync-engine startup failure
+            // (e.g. SQLite open error, missing sync folder) cannot remove
+            // the tray. We log the failure, flip the notifier to Error so
+            // the tray icon is visibly broken, and leave the user with a
+            // working menu so they can sign in, look at settings, or exit.
+            try
+            {
+                await _host.StartAsync().ConfigureAwait(true);
+            }
+            catch (Exception hostEx)
+            {
+                _logger.LogError(hostEx, "Host failed to start; tray will stay alive in Error state.");
+                try
+                {
+                    notifier.SetState(SyncState.Error);
+                }
+                catch (Exception notifierEx)
+                {
+                    _logger.LogWarning(notifierEx, "Could not flip notifier to Error after host start failure.");
+                }
+
+                ShowStartupFailureDialog("starting background services", hostEx);
+                // Intentionally do NOT rethrow — the tray is up; the user
+                // can sign out / exit cleanly via the menu.
+            }
+
+            // ----- Step 6: Skip the autostart prompt for signed-out users. -----
+            if (!signedIn)
+            {
+                // The user hasn't authenticated yet; pestering them about
+                // autostart now would be off-putting. We'll re-evaluate on
+                // the next launch (and after a successful sign-in below).
+                return;
+            }
+
+            // Workstream B: one-time "run at startup?" prompt. Non-modal,
+            // fire-and-forget — the tray and sync loop are already live so
+            // the prompt never blocks anything. Skip when the installer
+            // auto-launched us, when the user already opted out, or when
+            // the Run entry exists.
+            _ = MaybeShowStartupPromptAsync();
+        }
+        catch (Exception ex)
+        {
+            // Last-resort catch: a throw escaped every inner try/catch. The
+            // DispatcherUnhandledException handler would normally catch this
+            // for code dispatched onto the UI thread, but OnStartup is an
+            // async void so a synchronous throw here may not route through
+            // it cleanly. Surface the error explicitly.
+            HandleFatalException("building host", ex, exitAfter: true);
+        }
     }
 
     /// <summary>
-    /// Shows the onboarding window (modal). Safe to call from any state:
+    /// Installs handlers for every place an unobserved exception can hide on
+    /// .NET: the Dispatcher (UI-thread throws), the AppDomain (non-UI throws),
+    /// and the TaskScheduler (forgotten <see cref="Task"/>s). Each handler
+    /// logs the failure and shows a MessageBox so the user gets actionable
+    /// feedback instead of silence.
+    /// </summary>
+    private void RegisterGlobalExceptionHandlers()
+    {
+        DispatcherUnhandledException += (sender, args) =>
+        {
+            // Mark handled so WPF doesn't tear the process down immediately
+            // after we show the dialog — the user gets a chance to read it
+            // and decide whether to use the tray menu to exit cleanly.
+            args.Handled = true;
+            HandleFatalException("Dispatcher", args.Exception, exitAfter: false);
+        };
+
+        AppDomain.CurrentDomain.UnhandledException += (sender, args) =>
+        {
+            var ex = args.ExceptionObject as Exception;
+            // IsTerminating == true means the CLR is on its way out; we can
+            // still log + show the dialog, but cannot recover.
+            HandleFatalException(
+                args.IsTerminating ? "AppDomain (terminating)" : "AppDomain",
+                ex,
+                exitAfter: false);
+        };
+
+        TaskScheduler.UnobservedTaskException += (sender, args) =>
+        {
+            args.SetObserved();
+            HandleFatalException("TaskScheduler (unobserved Task)", args.Exception, exitAfter: false);
+        };
+    }
+
+    /// <summary>
+    /// Logs a fatal startup-time or runtime exception via Serilog (falls back
+    /// to <see cref="Log.Logger"/> if the DI container failed before we could
+    /// resolve <see cref="ILogger{T}"/>) and shows a MessageBox pointing at
+    /// the log directory. Never throws.
+    /// </summary>
+    /// <param name="stage">Short label for the failing stage; appears in the
+    /// MessageBox title and in the log entry.</param>
+    /// <param name="exception">The fatal exception. <see langword="null"/> is
+    /// tolerated and produces a generic "unknown error" message.</param>
+    /// <param name="exitAfter">When <see langword="true"/> the app is shut
+    /// down after the dialog closes — used for the last-resort OnStartup
+    /// catch where the host never came up. Other surfaces (Dispatcher,
+    /// AppDomain, TaskScheduler) keep the tray alive and let the user exit
+    /// via the menu when convenient.</param>
+    private void HandleFatalException(string stage, Exception? exception, bool exitAfter)
+    {
+        try
+        {
+            if (_logger is not null)
+            {
+                _logger.LogError(exception, "Fatal exception during {Stage}.", stage);
+            }
+            else
+            {
+                // Serilog's static logger is configured before Program builds
+                // the host (see Program.ConfigureSerilog), so this works even
+                // when DI has not produced an ILogger<App> yet — except in
+                // the corner case where BuildHost throws BEFORE ConfigureSerilog
+                // runs, in which case the catch block below quietly swallows
+                // the logging failure rather than recursing.
+                Log.Logger.Error(exception, "Fatal exception during {Stage}.", stage);
+            }
+        }
+        catch
+        {
+            // Never let the failure-reporter itself crash the failure path.
+        }
+
+        try
+        {
+            ShowStartupFailureDialog(stage, exception);
+        }
+        catch
+        {
+            // Same defensive principle — if MessageBox.Show throws (e.g. no
+            // interactive desktop) we silently skip rather than recurse.
+        }
+
+        if (exitAfter)
+        {
+            try
+            {
+                Shutdown(1);
+            }
+            catch
+            {
+                Environment.Exit(1);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Renders the user-facing error message via
+    /// <see cref="StartupFailureReporter.FormatMessage"/> and shows it in a
+    /// modal <see cref="MessageBox"/> on the UI thread. Marshals via
+    /// <see cref="Dispatcher"/> when called from a worker.
+    /// </summary>
+    private void ShowStartupFailureDialog(string stage, Exception? exception)
+    {
+        var logDir = StartupFailureReporter.GetDefaultLogDirectory();
+        var body = StartupFailureReporter.FormatMessage(stage, exception, logDir);
+
+        void Show()
+        {
+            MessageBox.Show(
+                body,
+                StartupFailureReporter.DialogTitle,
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+
+        if (Dispatcher.CheckAccess())
+        {
+            Show();
+        }
+        else
+        {
+            Dispatcher.Invoke(Show);
+        }
+    }
+
+    /// <summary>
+    /// Shows the onboarding window (non-modal). Safe to call from any state:
     /// if a window is already visible it is just activated. On a successful
     /// sign-in the sync state is flipped to <see cref="SyncState.Idle"/>.
     /// </summary>
+    /// <remarks>
+    /// This is intentionally non-modal: <see cref="OnStartup"/> calls it for
+    /// signed-out users BEFORE <see cref="IHost.StartAsync"/>, and a modal
+    /// <c>ShowDialog</c> there would block host startup until the user
+    /// clicked through the window. With <c>Show</c> the sync engine boots in
+    /// the background while the user signs in, and the tray icon — the only
+    /// guaranteed re-entry point — is already live underneath either way.
+    /// The window exposes its own <see cref="OnboardingWindow.SignInSucceeded"/>
+    /// flag (set just before <see cref="Window.Close"/>) so the "sign-in
+    /// succeeded" branch below still fires correctly; we cannot use
+    /// <see cref="Window.DialogResult"/> here because that property is only
+    /// settable when the window was opened modally.
+    /// </remarks>
     private void ShowOnboardingWindow()
     {
         if (_host is null)
@@ -102,7 +309,12 @@ public partial class App : Application, ITrayCommandHandler
             _onboardingWindow = window;
             window.Closed += (_, _) =>
             {
-                var succeeded = window.DialogResult == true;
+                // SignInSucceeded replaces DialogResult here — DialogResult
+                // is only settable when the window is shown modally and we
+                // now use Show() instead of ShowDialog() (see remarks on
+                // ShowOnboardingWindow). The OnboardingWindow sets this
+                // flag itself before calling Close().
+                var succeeded = window.SignInSucceeded;
                 if (ReferenceEquals(_onboardingWindow, window))
                 {
                     _onboardingWindow = null;
@@ -117,7 +329,7 @@ public partial class App : Application, ITrayCommandHandler
                     _ = MaybeShowStartupPromptAsync();
                 }
             };
-            window.ShowDialog();
+            window.Show();
         });
     }
 

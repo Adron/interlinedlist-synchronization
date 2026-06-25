@@ -13,7 +13,7 @@ available as an alternative for users who want to xcopy-deploy.
 
 | Tool | Why | How to install |
 |------|-----|----------------|
-| .NET 9 SDK | To run `dotnet publish` and produce the framework-dependent build the installer copies. | <https://dotnet.microsoft.com/download/dotnet/9.0> |
+| .NET 9 SDK | To run `dotnet publish` and produce the self-contained build the installer copies. | <https://dotnet.microsoft.com/download/dotnet/9.0> |
 | Inno Setup 6.x | Provides the `iscc.exe` compiler. | `choco install innosetup -y` (recommended), or download the installer from <https://jrsoftware.org/isdl.php>. |
 | Optional: `signtool.exe` | For code-signing the installer. Ships with the Windows SDK. | <https://learn.microsoft.com/windows/win32/seccrypto/signtool> |
 
@@ -28,11 +28,13 @@ available as an alternative for users who want to xcopy-deploy.
 From the repository root:
 
 ```powershell
-# 1. Produce the framework-dependent publish output.
+# 1. Produce the self-contained publish output. --self-contained true ships
+#    the .NET 9 runtime inside the publish dir so the installed app does not
+#    require a separately-installed .NET runtime on the user's machine.
 dotnet publish windows/InterlinedSync/InterlinedSync.csproj `
   --configuration Release `
   --runtime win-x64 `
-  --self-contained false `
+  --self-contained true `
   --output windows/publish
 
 # 2. Compile the installer.

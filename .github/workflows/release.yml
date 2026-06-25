@@ -108,13 +108,22 @@ jobs:
           retention-days: 1
 
   # ---------------------------------------------------------------------------
-  # Windows — framework-dependent publish (requires .NET 9 Desktop Runtime)
-  # PLUS an Inno Setup installer (InterlinedListSync-Setup-<tag>.exe). Both
-  # are uploaded; the installer is the recommended distribution channel and
+  # Windows — self-contained publish (bundles the .NET 9 runtime) PLUS an
+  # Inno Setup installer (InterlinedListSync-Setup-<tag>.exe). Both are
+  # uploaded; the installer is the recommended distribution channel and
   # the .zip remains for users who prefer xcopy deploy. The installer is
   # signed when WINDOWS_CERT_PFX_BASE64 + WINDOWS_CERT_PASSWORD secrets
   # exist; otherwise it ships UNSIGNED (SmartScreen will warn on first
   # install). See windows/PACKAGING.md for the full signing checklist.
+  #
+  # NOTE: --self-contained true ships the .NET 9 runtime inside the publish
+  # directory so the app launches on machines that do NOT have the .NET
+  # Desktop Runtime pre-installed. Earlier framework-dependent builds caused
+  # a silent no-op on first install for users without that runtime. We
+  # deliberately leave PublishTrimmed unset (default false) — WPF and the
+  # reflection-heavy DI graph break under trimming. We also stay folder-
+  # based (no PublishSingleFile) so the Inno [Files] glob keeps working
+  # without changes.
   # MSIX is deferred — see comment further down.
   # ---------------------------------------------------------------------------
   build-windows:
@@ -142,7 +151,7 @@ jobs:
           --configuration Release
           --no-restore
           --runtime win-x64
-          --self-contained false
+          --self-contained true
           --output publish
 
       - name: Zip publish output
@@ -348,8 +357,8 @@ jobs:
           | Platform | File | Notes |
           |----------|------|-------|
           | macOS 13 Ventura or later | \`InterlinedSync-macOS-${TAG}.zip\` | Unzip and move to \`/Applications\`. Unsigned — right-click → Open to bypass Gatekeeper on first launch. |
-          | Windows 10 / 11 (x64) — installer | \`InterlinedListSync-Setup-${TAG}.exe\` | Double-click and follow the wizard. Adds a Start Menu entry and optional autostart. Requires [.NET 9 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/9.0). |
-          | Windows 10 / 11 (x64) — portable | \`InterlinedSync-Windows-${TAG}.zip\` | Unzip and run \`InterlinedSync.exe\` for users who prefer no installer. Same runtime prerequisite. |
+          | Windows 10 / 11 (x64) — installer | \`InterlinedListSync-Setup-${TAG}.exe\` | Double-click and follow the wizard. Adds a Start Menu entry and optional autostart. **Self-contained** — no separate .NET runtime is required. |
+          | Windows 10 / 11 (x64) — portable | \`InterlinedSync-Windows-${TAG}.zip\` | Unzip and run \`InterlinedSync.exe\` for users who prefer no installer. **Self-contained** — no separate .NET runtime is required. |
           | Ubuntu / Debian (amd64) | \`interlinedlist-sync_*.deb\` | \`sudo dpkg -i interlinedlist-sync_*.deb\` |
           | Linux standalone binary | \`InterlinedSync-Linux-${TAG}.tar.gz\` | Extract and place \`interlinedlist-sync\` in your \`\$PATH\`. |
 

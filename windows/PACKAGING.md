@@ -9,12 +9,16 @@ SDK is available — see "MSIX status" near the bottom.
 
 | Artifact | Purpose | Install command |
 |----------|---------|-----------------|
-| `InterlinedListSync-Setup-<tag>.exe` | **Primary.** Inno Setup installer. Adds Start Menu shortcut, optional auto-start via HKCU Run, finish-page launch checkbox, registered uninstaller. Requires the .NET 9 Desktop Runtime. | Double-click and follow the wizard. |
-| `InterlinedSync-Windows-<tag>.zip` | **Secondary.** Framework-dependent xcopy build for users who prefer no installer. | Unzip and run `InterlinedSync.exe`. |
+| `InterlinedListSync-Setup-<tag>.exe` | **Primary.** Inno Setup installer. Adds Start Menu shortcut, optional auto-start via HKCU Run, finish-page launch checkbox, registered uninstaller. Self-contained — bundles the .NET 9 runtime, no separate install required. | Double-click and follow the wizard. |
+| `InterlinedSync-Windows-<tag>.zip` | **Secondary.** Self-contained xcopy build for users who prefer no installer. | Unzip and run `InterlinedSync.exe`. |
 
-Both artifacts are framework-dependent (the .NET 9 Desktop Runtime is a
-prerequisite — the installer does not yet bundle it). A self-contained
-variant is on the backlog.
+Both artifacts are **self-contained** (`dotnet publish --self-contained
+true`): the entire .NET 9 runtime ships inside the publish directory so the
+app launches on machines that do not have the .NET Desktop Runtime
+installed. This trades a substantially larger artifact (~100–150 MB) for
+a true double-click-to-run experience. Earlier framework-dependent builds
+silently no-op'd for users who never installed the runtime separately —
+the self-contained build closes that hole.
 
 ## Building locally
 
@@ -24,7 +28,7 @@ version:
 ```powershell
 # From the repository root.
 dotnet publish windows/InterlinedSync/InterlinedSync.csproj `
-  -c Release -r win-x64 --self-contained false -o windows/publish
+  -c Release -r win-x64 --self-contained true -o windows/publish
 iscc /Qp windows/installer/InterlinedSync.iss /DAppVersion=0.2.0
 ```
 

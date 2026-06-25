@@ -33,10 +33,26 @@ public partial class OnboardingWindow : Window
         Closed += (_, _) => _viewModel.SignInCompleted -= OnSignInCompleted;
     }
 
+    /// <summary>
+    /// True when the user completed sign-in successfully and the window
+    /// closed itself. <see cref="App"/> reads this after <see cref="Window.Closed"/>
+    /// fires to decide whether to flip the sync notifier to
+    /// <see cref="Sync.SyncState.Idle"/> and offer the autostart prompt.
+    /// </summary>
+    /// <remarks>
+    /// We deliberately do NOT use <see cref="Window.DialogResult"/> for this:
+    /// the property only allows assignment when the window was shown modally
+    /// (<see cref="Window.ShowDialog"/>), and <see cref="App"/> now shows
+    /// the window non-modally with <see cref="Window.Show"/> so it does not
+    /// block host startup. Setting <c>DialogResult</c> on a non-modal window
+    /// throws <see cref="InvalidOperationException"/>.
+    /// </remarks>
+    public bool SignInSucceeded { get; private set; }
+
     private async void OnSignInCompleted(object? sender, EventArgs e)
     {
         await PromptForSyncFolderAsync().ConfigureAwait(true);
-        DialogResult = true;
+        SignInSucceeded = true;
         Close();
     }
 
@@ -84,7 +100,7 @@ public partial class OnboardingWindow : Window
 
     private void CancelButton_OnClick(object sender, RoutedEventArgs e)
     {
-        DialogResult = false;
+        SignInSucceeded = false;
         Close();
     }
 }
