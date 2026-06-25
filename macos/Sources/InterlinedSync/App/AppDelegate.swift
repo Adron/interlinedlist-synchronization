@@ -96,8 +96,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        preferences.stopSecurityScopedAccess()
+    }
+
     private func signOut() async {
         await syncEngine?.stop()
+        preferences.stopSecurityScopedAccess()
         await authManager.logout()
         await syncEngine?.resetLedger()
         syncEngine = nil

@@ -58,7 +58,13 @@ final class PreferencesManager: ObservableObject, PreferenceStoring {
     private static let intervalKey = "pollIntervalSeconds"
     private static let bookmarkKey = "syncFolderBookmark"
 
-    init() {
+    private let scopedAccessor: SecurityScopedAccessing
+    /// The folder currently held open via a security-scoped sandbox extension, if any. Tracked so
+    /// access can be released when the folder changes or the user signs out.
+    private var accessedFolderURL: URL?
+
+    init(scopedAccessor: SecurityScopedAccessing = SecurityScopedAccessor()) {
+        self.scopedAccessor = scopedAccessor
         let stored = UserDefaults.standard.object(forKey: Self.intervalKey) as? TimeInterval
         pollIntervalSeconds = Self.clampInterval(stored ?? 30)
     }
@@ -103,7 +109,34 @@ final class PreferencesManager: ObservableObject, PreferenceStoring {
         if isStale {
             storeBookmark(for: url)
         }
+        beginSecurityScopedAccess(to: url)
         return url
+    }
+
+    /// Opens (and holds) security-scoped access to the resolved sync folder. A sandboxed build
+    /// cannot read, write, or watch the user's folder through a resolved bookmark until this
+    /// succeeds, and the access must stay open for as long as the sync engine runs. Without it the
+    /// app appears to work in the session that picked the folder — the `NSOpenPanel` grants a
+    /// process-lifetime extension — but loses all folder access on the next launch. Releasing any
+    /// previously-held folder first keeps the sandbox extension reference count balanced when the
+    /// folder changes.
+    func beginSecurityScopedAccess(to url: URL) {
+        if let accessedFolderURL {
+            guard accessedFolderURL != url else { return }
+            scopedAccessor.stopAccessing(accessedFolderURL)
+            self.accessedFolderURL = nil
+        }
+        if scopedAccessor.startAccessing(url) {
+            accessedFolderURL = url
+        }
+    }
+
+    /// Releases security-scoped access to the sync folder. Call on sign-out and app termination so
+    /// the sandbox extension opened by `beginSecurityScopedAccess(to:)` is balanced.
+    func stopSecurityScopedAccess() {
+        guard let accessedFolderURL else { return }
+        scopedAccessor.stopAccessing(accessedFolderURL)
+        self.accessedFolderURL = nil
     }
 
     private func storeBookmark(for url: URL) {
